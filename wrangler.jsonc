@@ -17,7 +17,7 @@
   // domain and rewrites the names and ids here. Deploying from the button
   // instead? Rename them in the deploy form; you can't change them later.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "rajveerz-qzz-io-driftmail",
+  "name": "driftmail",
   "main": "apps/api/src/index.ts",
   "compatibility_date": "2026-05-12",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -36,12 +36,12 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "rajveerz-qzz-io-driftmail",
-      "database_id": "c38472e3-223a-484b-bf73-1899bbcdc054",
+      "database_name": "driftmail-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "apps/api/migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "EMAIL_CACHE", "bucket_name": "rajveerz-qzz-io-driftmail-mail" }],
+  "r2_buckets": [{ "binding": "EMAIL_CACHE", "bucket_name": "driftmail-email-cache" }],
 
   // Outbound, when Cloudflare is chosen as the sending provider in the wizard.
   // Unrestricted, so the choice can change without a redeploy; the app enforces

@@ -1,5 +1,7 @@
 # Driftmail
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Rajveer-Mahida/claoudflare-email-client-v2)
+
 A private inbox that runs entirely on your own Cloudflare account. One Worker
 serves the app, receives your mail, and configures its own delivery.
 
