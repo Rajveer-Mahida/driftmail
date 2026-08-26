@@ -1,9 +1,10 @@
+import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Archive, Trash2, MailOpen, Mail, Clock, X, Trash } from "lucide-react";
 import { toast } from "sonner";
 import { useUI } from "@/lib/store";
 import { useFlag, useSnooze, usePermanentDelete } from "@/api/hooks";
-import { IconButton, Tip } from "@/components/primitives";
+import { ConfirmDialog, IconButton, Tip } from "@/components/primitives";
 import { SnoozeMenu } from "@/components/SnoozeMenu";
 
 export function BulkBar() {
@@ -14,6 +15,7 @@ export function BulkBar() {
 
   const ids = [...selection];
   const count = ids.length;
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   function act(field: "is_archived" | "is_deleted" | "is_read", value: 0 | 1, label: string) {
     flag.mutate({ ids, field, value });
@@ -67,13 +69,9 @@ export function BulkBar() {
               )}
               {view === "trash" ? (
                 <Tip label="Delete forever">
-                  <IconButton
-                    onClick={() => {
-                      permaDelete.mutate(ids);
-                      clearSelection();
-                      toast.success("Deleted forever");
-                    }}
-                  >
+                  {/* The one unrecoverable action in the mail UI — everything
+                      else here is a flag flip that trash can undo. */}
+                  <IconButton onClick={() => setConfirmDelete(true)}>
                     <Trash size={17} className="text-danger" />
                   </IconButton>
                 </Tip>
@@ -88,6 +86,19 @@ export function BulkBar() {
           </div>
         </motion.div>
       )}
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete ${count} message${count === 1 ? "" : "s"} forever?`}
+        description="They're removed permanently, along with their attachments. This is the one action here that can't be undone."
+        confirmLabel={`Delete ${count} forever`}
+        onConfirm={() => {
+          permaDelete.mutate(ids);
+          clearSelection();
+          setConfirmDelete(false);
+          toast.success("Deleted forever");
+        }}
+      />
     </AnimatePresence>
   );
 }

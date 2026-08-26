@@ -25,6 +25,22 @@ export class FakeR2 {
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
   }
+
+  /** Enough of R2's list() for prefix sweeps and the full-wipe pagination loop. */
+  async list(opts: { prefix?: string; cursor?: string; limit?: number } = {}) {
+    const keys = [...this.objects.keys()]
+      .filter((k) => !opts.prefix || k.startsWith(opts.prefix))
+      .sort();
+    const start = opts.cursor ? Number(opts.cursor) : 0;
+    const limit = opts.limit ?? 1000;
+    const page = keys.slice(start, start + limit);
+    const truncated = start + limit < keys.length;
+    return {
+      objects: page.map((key) => ({ key })),
+      truncated,
+      cursor: truncated ? String(start + limit) : undefined,
+    };
+  }
 }
 
 export type SentEmail = Record<string, unknown>;

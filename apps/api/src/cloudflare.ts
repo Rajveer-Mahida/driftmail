@@ -418,6 +418,27 @@ export async function setCatchAllToWorker(
   });
 }
 
+/**
+ * Point the catch-all at nothing, without touching routing settings.
+ *
+ * The honest fallback when removing a domain with a least-privilege token:
+ * disabling Email Routing needs the settings permission such tokens lack, and
+ * silently failing at it leaves Cloudflare delivering to a Worker that now
+ * rejects everything — a bounce storm. Disabling the catch-all RULE only needs
+ * the rules permission the token certainly has, since setting it needed it.
+ */
+export async function disableCatchAll(token: string, zoneId: string): Promise<void> {
+  await cf(token, `/zones/${zoneId}/email/routing/rules/catch_all`, {
+    method: "PUT",
+    body: {
+      name: "Driftmail catch-all (disabled)",
+      enabled: false,
+      matchers: [{ type: "all" }],
+      actions: [{ type: "drop" }],
+    },
+  });
+}
+
 // ── outbound sending ─────────────────────────────────────────────────────────
 
 export type SendingSubdomain = { tag?: string; name: string; dkim_selector?: string };

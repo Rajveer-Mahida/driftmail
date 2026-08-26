@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@/api/client";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner } from "@/components/primitives";
 
 /**
  * Shown instead of the inbox when an account is still on the temporary password
@@ -44,8 +44,7 @@ export function ChangePasswordGate() {
         <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted">
           Temporary password
         </label>
-        <input
-          type="password"
+        <PasswordInput
           autoFocus
           autoComplete="current-password"
           value={current}
@@ -56,8 +55,7 @@ export function ChangePasswordGate() {
         <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted">
           New password
         </label>
-        <input
-          type="password"
+        <PasswordInput
           autoComplete="new-password"
           minLength={12}
           value={next}

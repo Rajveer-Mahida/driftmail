@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner } from "@/components/primitives";
 import { setupApi } from "@/api/setup";
 import type { StepProps } from "../SetupPage";
 import { Actions, Field, Notice, StepHeader, inputClass } from "./shared";
@@ -64,8 +64,7 @@ export function StepExtras({ next, back, skip, state }: StepProps) {
         label="Anthropic API key"
         hint="Optional. Powers thread summaries and suggested replies."
       >
-        <input
-          type="password"
+        <PasswordInput
           value={anthropicKey}
           onChange={(e) => setAnthropicKey(e.target.value)}
           placeholder="sk-ant-..."

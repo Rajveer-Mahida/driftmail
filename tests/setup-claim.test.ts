@@ -887,3 +887,236 @@ test("the worker step refuses a name that isn't a real script", async () => {
   }
   d.close();
 });
+
+test("removing a domain detaches Cloudflare before deleting the row", async () => {
+  // Observed live: a least-privilege token can't disable Email Routing, the
+  // failure was swallowed, the row was deleted anyway — and Cloudflare kept
+  // delivering to a Worker that now bounced every message. The fallback is the
+  // catch-all rule, which such a token can always edit: it created it.
+  const { d, env, app } = await claimApp();
+  const calls: string[] = [];
+  const { restore } = stubFetch([
+    ...customDomainAccount("mail.example.com", "driftmail"),
+    { match: (u) => u.includes("/email/routing/disable"), respond: () => denied(403, 10000) },
+    {
+      match: (u, init) => {
+        if (u.endsWith("/email/routing/rules/catch_all") && init?.method === "PUT") {
+          calls.push(String(init.body));
+          return true;
+        }
+        return false;
+      },
+      respond: () => ok({ enabled: false }),
+    },
+  ]);
+  try {
+    const claimed = await app.fetch(claimReq({ cfToken: TOKEN, ...ADMIN }), env as never);
+    const cookie = (claimed.headers.get("set-cookie") ?? "").split(";")[0];
+
+    // Two rows, so removing one is legal under the last-domain rule.
+    d.exec(`INSERT INTO domains (domain, zone_id, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('example.com', 'z1', 1, 1, 1, 1), ('keeper.com', 'z2', 1, 1, 1, 1)`);
+
+    const res = await app.fetch(
+      new Request("https://mail.example.com/api/domains/example.com", {
+        method: "DELETE",
+        headers: { cookie },
+      }),
+      env as never,
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { detached: boolean; warning?: string };
+    assert.equal(body.detached, true, "the catch-all fallback should have detached it");
+    assert.equal(body.warning, undefined);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /"enabled":false/);
+    assert.equal(d.query(`SELECT 1 FROM domains WHERE domain='example.com'`).length, 0);
+  } finally {
+    restore();
+  }
+  d.close();
+});
+
+test("when Cloudflare can't be detached at all, the removal says so", async () => {
+  const { d, env, app } = await claimApp();
+  const { restore } = stubFetch([
+    ...customDomainAccount("mail.example.com", "driftmail"),
+    { match: (u) => u.includes("/email/routing/disable"), respond: () => denied(403, 10000) },
+    {
+      match: (u, init) => u.endsWith("/rules/catch_all") && init?.method === "PUT",
+      respond: () => denied(403, 10000),
+    },
+  ]);
+  try {
+    const claimed = await app.fetch(claimReq({ cfToken: TOKEN, ...ADMIN }), env as never);
+    const cookie = (claimed.headers.get("set-cookie") ?? "").split(";")[0];
+    d.exec(`INSERT INTO domains (domain, zone_id, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('example.com', 'z1', 1, 1, 1, 1), ('keeper.com', 'z2', 1, 1, 1, 1)`);
+
+    const res = await app.fetch(
+      new Request("https://mail.example.com/api/domains/example.com", {
+        method: "DELETE",
+        headers: { cookie },
+      }),
+      env as never,
+    );
+    const body = (await res.json()) as { detached: boolean; warning?: string };
+    assert.equal(body.detached, false);
+    assert.match(body.warning ?? "", /bounce/);
+  } finally {
+    restore();
+  }
+  d.close();
+});
+
+test("the last domain cannot be removed at all", async () => {
+  // One domain gone = one domain's mail stops. The LAST domain gone = the whole
+  // instance is deaf. Strictly refused server-side with no override — like the
+  // last administrator, the way out is adding another first.
+  const { d, env, app } = await claimApp();
+  const { restore } = stubFetch([
+    ...customDomainAccount("mail.example.com", "driftmail"),
+    { match: (u) => u.includes("/email/routing/disable"), respond: () => ok({}) },
+  ]);
+  try {
+    const claimed = await app.fetch(claimReq({ cfToken: TOKEN, ...ADMIN }), env as never);
+    const cookie = (claimed.headers.get("set-cookie") ?? "").split(";")[0];
+    d.exec(`INSERT INTO domains (domain, zone_id, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('example.com', 'z1', 1, 1, 1, 1)`);
+
+    const del = (path: string) =>
+      app.fetch(
+        new Request(`https://mail.example.com${path}`, { method: "DELETE", headers: { cookie } }),
+        env as never,
+      );
+
+    const refused = await del("/api/domains/example.com");
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { error: string }).error, "last_domain");
+    assert.equal(d.query(`SELECT 1 FROM domains`).length, 1, "nothing deleted");
+
+    // No override exists — a force flag must not sneak past it either.
+    assert.equal((await del("/api/domains/example.com?force=1")).status, 409);
+    assert.equal(d.query(`SELECT 1 FROM domains`).length, 1);
+
+    // With a second domain present, a non-primary one is removable — down to
+    // one, then locked again.
+    d.exec(`INSERT INTO domains (domain, zone_id, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('b.com', 'z1', 1, 1, 1, 1)`);
+    assert.equal((await del("/api/domains/b.com")).status, 200);
+    assert.equal((await del("/api/domains/example.com")).status, 409);
+  } finally {
+    restore();
+  }
+  d.close();
+});
+
+
+test("the primary domain cannot be removed until another is promoted", async () => {
+  // The primary is the instance's default sender and alias domain. Removing it
+  // out from under those is refused; the path out is promotion, which demotes
+  // the incumbent atomically via the partial unique index.
+  const { d, env, app } = await claimApp();
+  const { restore } = stubFetch([
+    ...customDomainAccount("mail.example.com", "driftmail"),
+    { match: (u) => u.includes("/email/routing/disable"), respond: () => ok({}) },
+  ]);
+  try {
+    const claimed = await app.fetch(claimReq({ cfToken: TOKEN, ...ADMIN }), env as never);
+    const cookie = (claimed.headers.get("set-cookie") ?? "").split(";")[0];
+    d.exec(`INSERT INTO domains (domain, zone_id, is_primary, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('main.com', 'z1', 1, 1, 1, 1, 1), ('other.com', 'z2', 0, 1, 1, 1, 1)`);
+
+    const call = (path: string, method = "DELETE") =>
+      app.fetch(
+        new Request(`https://mail.example.com${path}`, { method, headers: { cookie } }),
+        env as never,
+      );
+
+    const refused = await call("/api/domains/main.com");
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { error: string }).error, "primary_domain");
+
+    // Promote the other, which demotes the incumbent…
+    assert.equal((await call("/api/domains/other.com/primary", "POST")).status, 200);
+    const primaries = d.query<{ domain: string }>(
+      `SELECT domain FROM domains WHERE is_primary = 1`,
+    );
+    assert.deepEqual(primaries.map((r) => r.domain), ["other.com"]);
+
+    // …and now the old primary is removable.
+    assert.equal((await call("/api/domains/main.com")).status, 200);
+  } finally {
+    restore();
+  }
+  d.close();
+});
+
+// ── factory reset ────────────────────────────────────────────────────────────
+
+test("factory reset needs the password, wipes everything, and reopens setup", async () => {
+  const { d, env, app } = await claimApp();
+  const detach: string[] = [];
+  const { restore } = stubFetch([
+    ...customDomainAccount("mail.example.com", "driftmail"),
+    {
+      match: (u) => u.includes("/email/routing/disable"),
+      respond: (u) => {
+        detach.push(u);
+        return ok({});
+      },
+    },
+  ]);
+  try {
+    const claimed = await app.fetch(claimReq({ cfToken: TOKEN, ...ADMIN }), env as never);
+    const cookie = (claimed.headers.get("set-cookie") ?? "").split(";")[0];
+
+    // A lived-in instance: mail, an R2 blob, a domain.
+    d.exec(`INSERT INTO domains (domain, zone_id, receive_enabled, accept_all, created_at, updated_at)
+              VALUES ('example.com', 'z1', 1, 1, 1, 1)`);
+    const uid = d.query<{ id: string }>(`SELECT id FROM users`)[0].id;
+    d.exec(`INSERT INTO messages (id, user_id, direction, from_addr, to_addr, subject, text, raw_key, received_at)
+              VALUES ('m1', '${uid}', 'in', 'a@b.com', 'c@example.com', 'Hi', 'body', 'u/${uid}/emails/m1.eml', 1)`);
+    env.EMAIL_CACHE.put(`u/${uid}/emails/m1.eml`, "raw");
+
+    const reset = (body: unknown) =>
+      app.fetch(
+        new Request("https://mail.example.com/api/admin/reset", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        env as never,
+      );
+
+    // The two gates, separately.
+    assert.equal((await reset({ password: PW })).status, 400, "must type RESET");
+    assert.equal(
+      (await reset({ confirm: "RESET", password: "wrong-password-here" })).status,
+      403,
+      "must re-authenticate",
+    );
+    assert.equal(d.query(`SELECT 1 FROM messages`).length, 1, "refusals must not wipe");
+
+    const res = await reset({ confirm: "RESET", password: PW });
+    assert.equal(res.status, 200);
+    assert.deepEqual(((await res.json()) as { warnings: string[] }).warnings, []);
+
+    // Cloudflare detached BEFORE data went — the bounce-storm lesson.
+    assert.equal(detach.length, 1);
+    // Everything is gone: rows, blobs, the claim itself.
+    for (const table of ["messages", "users", "domains", "secrets", "config"]) {
+      assert.equal(d.query(`SELECT 1 FROM ${table}`).length, 0, `${table} not empty`);
+    }
+    assert.equal(env.EMAIL_CACHE.objects.size, 0);
+
+    const status = await app.fetch(
+      new Request("https://mail.example.com/api/setup/status"),
+      env as never,
+    );
+    assert.equal(((await status.json()) as { claimed: boolean }).claimed, false);
+  } finally {
+    restore();
+  }
+  d.close();
+});

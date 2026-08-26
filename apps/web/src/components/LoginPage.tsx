@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { setupApi } from "@/api/setup";
 import { toast } from "sonner";
 import { api, ApiError } from "@/api/client";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner } from "@/components/primitives";
 import { Logomark } from "@/components/Logomark";
 
 export function LoginPage() {
@@ -74,8 +74,7 @@ export function LoginPage() {
           <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted">
             Password
           </label>
-          <input
-            type="password"
+          <PasswordInput
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

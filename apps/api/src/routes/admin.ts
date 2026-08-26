@@ -15,6 +15,9 @@ import {
   validateHandle,
 } from "../users.ts";
 import { getDomain, listDomains, setDomainCatchall } from "../config/domains.ts";
+import { cfToken, disableCatchAll, disableRouting } from "../cloudflare.ts";
+import { invalidateConfigCache } from "../config/index.ts";
+import { verifyPassword } from "../users.ts";
 import { explainRecipient } from "../routing.ts";
 import { requireAdmin } from "../middleware.ts";
 
@@ -248,4 +251,88 @@ admin.get("/unrouted", async (c) => {
 admin.delete("/unrouted", async (c) => {
   await c.env.DB.prepare(`DELETE FROM unrouted`).run();
   return c.json({ ok: true });
+});
+
+// ── factory reset ────────────────────────────────────────────────────────────
+
+/**
+ * Wipe the instance back to unclaimed: every message, person, credential and
+ * setting — as if freshly deployed, with /setup waiting.
+ *
+ * Ordering is the design here, learned the hard way in this codebase's history:
+ * Cloudflare must be detached from every domain BEFORE the data goes. A wiped
+ * instance still receiving a domain's mail bounces all of it.
+ */
+admin.post("/reset", async (c) => {
+  const me = c.get("user");
+  const body = await c.req
+    .json<{ password?: string; confirm?: string }>()
+    .catch(() => ({}) as Record<string, never>);
+
+  // Re-authenticate: a reset from a hijacked or forgotten-open session must not
+  // be one click. The typed word is for the human; the password is the gate.
+  if (body.confirm !== "RESET") {
+    return c.json({ error: 'Type RESET to confirm.' }, 400);
+  }
+  const row = await getUserById(c.env.DB, me.id);
+  if (!row || !(await verifyPassword(row, body.password ?? ""))) {
+    return c.json({ error: "That isn't your password." }, 403);
+  }
+
+  const warnings: string[] = [];
+
+  // 1. Detach Cloudflare from every domain, best-effort within the token.
+  const token = await cfToken(c.env);
+  for (const domain of await listDomains(c.env.DB)) {
+    if (!token || !domain.zone_id) continue;
+    const detached =
+      (await disableRouting(token, domain.zone_id).then(
+        () => true,
+        () => false,
+      )) ||
+      (await disableCatchAll(token, domain.zone_id).then(
+        () => true,
+        () => false,
+      ));
+    if (!detached) {
+      warnings.push(
+        `${domain.domain}: Cloudflare could not be detached — its mail may still route here and bounce. Check the zone's Email Routing in the dashboard.`,
+      );
+    }
+  }
+
+  // 2. Sweep R2 before the rows that reference it, or every blob is orphaned.
+  let cursor: string | undefined;
+  do {
+    const page = await c.env.EMAIL_CACHE.list({ cursor, limit: 500 });
+    for (const obj of page.objects) await c.env.EMAIL_CACHE.delete(obj.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  // 3. The database, children before parents. `config` last: deleting
+  //    instance.claimed_at is the moment the instance becomes claimable again,
+  //    so everything else must already be gone by then.
+  for (const table of [
+    "message_labels",
+    "attachments",
+    "messages",
+    "drafts",
+    "aliases",
+    "rules",
+    "labels",
+    "push_subscriptions",
+    "user_settings",
+    "login_attempts",
+    "domain_dns",
+    "domains",
+    "unrouted",
+    "users",
+    "secrets",
+    "config",
+  ]) {
+    await c.env.DB.prepare(`DELETE FROM ${table}`).run();
+  }
+  invalidateConfigCache();
+
+  return c.json({ ok: true, warnings });
 });

@@ -123,7 +123,10 @@ export const setupApi = {
     req<TokenCheck>("/api/setup/check-token", post({ cfToken, ...scope })),
   status: () => req<SetupStatus>("/api/setup/status"),
   claim: (body: ClaimRequest) => req<ClaimResponse>("/api/setup/claim", post(body)),
-  worker: () => req<{ name: string; source: string; hostname: string }>("/api/setup/worker"),
+  worker: () =>
+    req<{ name: string; source: string; hostname: string; candidates: string[] }>(
+      "/api/setup/worker",
+    ),
   setWorker: (name: string) =>
     req<{ ok: true; name: string }>("/api/setup/worker", post({ name })),
   zones: () => req<{ zones: SetupZone[] }>("/api/domains/zones"),

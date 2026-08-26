@@ -38,13 +38,19 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let msg = res.statusText;
+    let payload: unknown = null;
     try {
       const j = (await res.json()) as { error?: string };
+      payload = j;
       msg = j.error ?? msg;
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, msg);
+    const err = new ApiError(res.status, msg);
+    // Some failures carry structure worth branching on — mx_in_use returns the
+    // records that would be replaced, which the UI shows before confirming.
+    (err as ApiError & { body?: unknown }).body = payload;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -157,12 +163,23 @@ export const api = {
 
   // domains (only once a Cloudflare token is stored; 503 otherwise)
   listDomains: () => req<DomainsResponse>("/api/domains"),
+  listZones: () =>
+    req<{ zones: Array<{ id: string; name: string; added: boolean; currentMx: string[]; managedDns: boolean }> }>(
+      "/api/domains/zones",
+    ),
+  addDomain: (data: { zoneId: string; domain: string; primary?: boolean; confirmOverwriteMx?: boolean }) =>
+    req<{ ok: true }>("/api/domains", body(data)),
   domainStatus: (domain: string) =>
     req<{ routing_state: string; catch_all_ok: boolean; records: DomainDnsRecord[] }>(
       `/api/domains/${encodeURIComponent(domain)}/status`,
     ),
+  makePrimaryDomain: (domain: string) =>
+    req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}/primary`, { method: "POST" }),
   disconnectDomain: (domain: string) =>
-    req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}`, { method: "DELETE" }),
+    req<{ ok: true; detached?: boolean; warning?: string }>(
+      `/api/domains/${encodeURIComponent(domain)}`,
+      { method: "DELETE" },
+    ),
 
   // rules
   listRules: () => req<RuleRow[]>("/api/rules"),

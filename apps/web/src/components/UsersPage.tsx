@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { AdminUserRow, SettingsResponse } from "@email/shared";
-import { Button, Spinner } from "@/components/primitives";
+import { Button, ConfirmDialog, Spinner } from "@/components/primitives";
 import { ApiError } from "@/api/client";
 
 type UsersResponse = { users: AdminUserRow[] };
@@ -59,6 +59,10 @@ export function UsersPage() {
   const [handle, setHandle] = useState("");
   const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
   const [preview, setPreview] = useState("");
+  /** Pending confirmation: which user, and which of the two heavy actions. */
+  const [pending, setPending] = useState<{ user: AdminUserRow; kind: "reset" | "disable" } | null>(
+    null,
+  );
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["admin", "users"] });
 
@@ -105,14 +109,18 @@ export function UsersPage() {
 
   if (settings.data && settings.data.user.role !== "admin") {
     return (
-      <div className="grid h-full place-items-center p-6 text-sm text-muted">
+      <div className="grid h-full min-w-0 flex-1 place-items-center p-6 text-sm text-muted">
         Only an administrator can manage people.
       </div>
     );
   }
 
   return (
-    <div className="mx-auto h-full w-full max-w-3xl overflow-y-auto p-6">
+    // Same shell contract as SettingsPage/DraftsPage: the route root is the
+    // flex-1 scroll region, and a centered column lives inside it. A w-full
+    // root here fought the AppShell flex row and slid under the sidebar.
+    <div className="scroll-thin h-full min-w-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-3xl px-6 py-8 md:px-10">
       <h1 className="mb-1 font-display text-2xl font-semibold tracking-tight">People</h1>
       <p className="mb-6 text-sm text-muted">
         Everyone here gets their own inbox. Mail is routed by handle, so{" "}
@@ -215,12 +223,23 @@ export function UsersPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-1">
-                        <Button onClick={() => reset.mutate(u.id)}>Reset password</Button>
-                        <Button
-                          onClick={() => update.mutate({ id: u.id, body: { disabled: !u.disabled } })}
-                        >
-                          {u.disabled ? "Enable" : "Disable"}
+                        {/* Both of these hit a real person: a reset signs them
+                            out of every device; a disable also bounces their
+                            mail. Re-enabling is harmless and stays instant. */}
+                        <Button onClick={() => setPending({ user: u, kind: "reset" })}>
+                          Reset password
                         </Button>
+                        {u.disabled ? (
+                          <Button
+                            onClick={() => update.mutate({ id: u.id, body: { disabled: false } })}
+                          >
+                            Enable
+                          </Button>
+                        ) : (
+                          <Button onClick={() => setPending({ user: u, kind: "disable" })}>
+                            Disable
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -260,6 +279,35 @@ export function UsersPage() {
           </p>
         )}
       </section>
+
+      <ConfirmDialog
+        open={!!pending}
+        onOpenChange={(o) => !o && setPending(null)}
+        title={
+          pending?.kind === "reset"
+            ? `Reset ${pending.user.email}'s password?`
+            : `Disable ${pending?.user.email}?`
+        }
+        description={
+          pending?.kind === "reset"
+            ? "They're signed out of every device, and you'll get a temporary password to hand them — shown once."
+            : "They can't sign in, and mail to their addresses bounces until re-enabled. Their mailbox is kept."
+        }
+        confirmLabel={pending?.kind === "reset" ? "Reset password" : "Disable account"}
+        busy={reset.isPending || update.isPending}
+        onConfirm={() => {
+          if (!pending) return;
+          if (pending.kind === "reset") {
+            reset.mutate(pending.user.id, { onSettled: () => setPending(null) });
+          } else {
+            update.mutate(
+              { id: pending.user.id, body: { disabled: true } },
+              { onSettled: () => setPending(null) },
+            );
+          }
+        }}
+      />
+      </div>
     </div>
   );
 }

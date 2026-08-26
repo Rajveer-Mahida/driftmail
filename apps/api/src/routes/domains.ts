@@ -6,6 +6,7 @@ import {
   authHint,
   cfToken,
   enableRouting,
+  disableCatchAll,
   disableRouting,
   getCatchAll,
   findDnsRecords,
@@ -263,17 +264,77 @@ domains.get("/:domain/status", async (c) => {
   });
 });
 
+/** Promote a domain to primary; the incumbent is demoted automatically by the
+ *  partial unique index handling in upsertDomain. */
+domains.post("/:domain/primary", async (c) => {
+  const name = c.req.param("domain").toLowerCase();
+  if (!(await getDomain(c.env.DB, name))) return c.json({ error: "not found" }, 404);
+  await upsertDomain(c.env.DB, name, { is_primary: 1 });
+  return c.json({ ok: true, primary: name });
+});
+
 domains.delete("/:domain", async (c) => {
   const name = c.req.param("domain").toLowerCase();
   const row = await getDomain(c.env.DB, name);
   if (!row) return c.json({ error: "not found" }, 404);
 
+  // Removing the last domain makes the instance deaf — no address anywhere can
+  // reach it. Strictly refused, with no override: like the last administrator,
+  // the way out is to add another first, not to confirm harder.
+  const all = await listDomains(c.env.DB);
+  if (all.length === 1) {
+    return c.json(
+      {
+        error: "last_domain",
+        detail:
+          "This is the only domain — removing it would stop ALL mail to this inbox. Add another domain first.",
+      },
+      409,
+    );
+  }
+
+  // The primary is the instance's default — fallback sender, alias generation.
+  // Removing it out from under those is refused the same way: promote another
+  // domain first, then this one becomes removable.
+  if (row.is_primary === 1) {
+    return c.json(
+      {
+        error: "primary_domain",
+        detail: "This is the primary domain. Make another domain primary first, then remove it.",
+      },
+      409,
+    );
+  }
+
   const token = await cfToken(c.env);
-  // Best-effort: the operator asked to stop using this domain here, and leaving
-  // a stale row behind because Cloudflare was unreachable helps nobody.
+  // The row must not be deleted while Cloudflare still delivers here: the
+  // resolver would reject every message — a bounce storm, observed live. So
+  // Cloudflare is detached FIRST, and only best-effort within what the token
+  // can do: disabling routing needs the settings permission a least-privilege
+  // token lacks, in which case the catch-all rule (which such a token can
+  // always edit — it created it) is disabled instead.
+  let detached = false;
   if (token && row.zone_id) {
-    await disableRouting(token, row.zone_id).catch(() => {});
+    detached = await disableRouting(token, row.zone_id).then(
+      () => true,
+      () => false,
+    );
+    if (!detached) {
+      detached = await disableCatchAll(token, row.zone_id).then(
+        () => true,
+        () => false,
+      );
+    }
   }
   await deleteDomain(c.env.DB, name);
-  return c.json({ ok: true });
+  return c.json({
+    ok: true,
+    detached,
+    ...(detached
+      ? {}
+      : {
+          warning:
+            "Cloudflare could not be updated, so it may still route this domain's mail here — and it will bounce. Check the zone's Email Routing in the dashboard.",
+        }),
+  });
 });

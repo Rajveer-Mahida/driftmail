@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner } from "@/components/primitives";
 import { ApiError } from "@/api/client";
 import { setupApi, type DnsRow } from "@/api/setup";
 import type { StepProps } from "../SetupPage";
@@ -122,8 +122,7 @@ export function StepSending({ next, back, skip, state }: StepProps) {
             </>
           }
         >
-          <input
-            type="password"
+          <PasswordInput
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder="re_..."

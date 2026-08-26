@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner } from "@/components/primitives";
 import { ApiError } from "@/api/client";
 import { setupApi, type Capability, type TokenCheck } from "@/api/setup";
 import type { StepProps } from "../SetupPage";
@@ -458,9 +458,8 @@ export function StepCloudflare({ next, back, patch }: StepProps) {
           label="Setup token"
           hint="The value of the SETUP_TOKEN secret you set on this Worker."
         >
-          <input
+          <PasswordInput
             autoFocus
-            type="password"
             value={setupToken}
             onChange={(e) => setSetupToken(e.target.value)}
             className={inputClass}
@@ -506,8 +505,7 @@ export function StepCloudflare({ next, back, patch }: StepProps) {
           />
         </Field>
         <Field label="Password" hint="At least 12 characters.">
-          <input
-            type="password"
+          <PasswordInput
             required
             minLength={12}
             value={password}

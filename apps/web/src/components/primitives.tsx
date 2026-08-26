@@ -1,5 +1,7 @@
 import * as React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { Eye, EyeOff } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn, initials, avatarHue } from "@/lib/utils";
 
@@ -133,5 +135,88 @@ export function Spinner({ className }: { className?: string }) {
       animate={{ rotate: 360 }}
       transition={{ repeat: Infinity, duration: 0.7, ease: "linear" }}
     />
+  );
+}
+
+/**
+ * The one confirmation dialog.
+ *
+ * Destructive actions used to fire on first click — observed going wrong with a
+ * removed domain — while the few confirmations that existed were each hand-built.
+ * One component keeps the pattern consistent: title states the action, the
+ * description states the consequence, and the confirm button never says "OK" —
+ * it repeats the verb.
+ */
+export function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  confirmLabel,
+  busy = false,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: React.ReactNode;
+  /** The verb, repeated — "Delete 3 messages", never "OK". */
+  confirmLabel: string;
+  busy?: boolean;
+  onConfirm: () => void;
+}) {
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-elevated p-5 shadow-[var(--shadow-lg)]">
+          <DialogPrimitive.Title className="font-display text-lg font-semibold">
+            {title}
+          </DialogPrimitive.Title>
+          <DialogPrimitive.Description className="mt-2 text-sm text-muted">
+            {description}
+          </DialogPrimitive.Description>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button onClick={() => onOpenChange(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={onConfirm} disabled={busy}>
+              {busy ? "Working…" : confirmLabel}
+            </Button>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
+
+/**
+ * A password field with a reveal toggle.
+ *
+ * Everywhere a secret is typed — passwords, API keys, setup tokens — people
+ * paste or copy long values they can't verify blind. The eye shows what's
+ * actually in the box; type="password" stays the default so nothing is exposed
+ * without a deliberate click.
+ */
+export function PasswordInput({
+  className,
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement>) {
+  const [show, setShow] = React.useState(false);
+  return (
+    <div className="relative">
+      <input {...props} type={show ? "text" : "password"} className={cn("pr-11", className)} />
+      <button
+        type="button"
+        // Never submits the surrounding form, and never steals tab order from
+        // the field-to-field flow — the eye is a mouse affordance.
+        tabIndex={-1}
+        aria-label={show ? "Hide" : "Show"}
+        onClick={() => setShow((v) => !v)}
+        className="absolute right-3 top-1/2 -translate-y-1/2 text-faint transition-colors hover:text-fg"
+      >
+        {show ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
   );
 }

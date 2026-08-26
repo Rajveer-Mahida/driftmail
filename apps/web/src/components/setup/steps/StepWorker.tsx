@@ -18,12 +18,14 @@ export function StepWorker({ next, back, state, patch }: StepProps) {
   const [name, setName] = useState(state.workerName);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [candidates, setCandidates] = useState<string[]>([]);
 
   useEffect(() => {
     setupApi
       .worker()
       .then((w) => {
         setName((current) => current || w.name);
+        setCandidates(w.candidates ?? []);
         patch({ workerSource: w.source, hostname: w.hostname });
       })
       .catch(() => {})
@@ -64,6 +66,30 @@ export function StepWorker({ next, back, state, patch }: StepProps) {
           Couldn't detect it automatically. You'll find it at the top of this Worker's page in the
           Cloudflare dashboard — it must match exactly.
         </Notice>
+      )}
+
+      {candidates.length > 0 && (
+        <Field
+          label="Workers in your account"
+          hint="Pick the one this app is deployed as — typing it invites a typo, and the catch-all rule matches the name exactly."
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {candidates.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setName(c)}
+                className={`rounded-full border px-3 py-1 font-mono text-xs transition ${
+                  name === c
+                    ? "border-accent-ring bg-accent/10 text-fg"
+                    : "border-border text-muted hover:border-accent-ring/40"
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+        </Field>
       )}
 
       <Field label="Worker name">
