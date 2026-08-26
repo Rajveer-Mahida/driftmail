@@ -19,8 +19,14 @@ export function randomLocal(): string {
   return `${adj}-${noun}-${num}`;
 }
 
-/** Full alias address; suffix comes from instance settings ("" = none). */
-export function randomAlias(domain: string, suffix: string): string {
+/**
+ * A full throwaway address.
+ *
+ * The handle is appended as a sub-address so the address routes back to this
+ * mailbox on its own, before any alias row exists — see the resolver in
+ * apps/api/src/routing.ts.
+ */
+export function randomAlias(domain: string, handle: string): string {
   const local = randomLocal();
-  return suffix ? `${local}.${suffix}@${domain}` : `${local}@${domain}`;
+  return handle ? `${local}.${handle}@${domain}` : `${local}@${domain}`;
 }

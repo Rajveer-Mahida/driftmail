@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { ArrowLeft, AtSign, Copy, Inbox, Trash2, Sparkles, Plus, Check, Ban } from "lucide-react";
 import type { AliasWithCount } from "@email/shared";
 import { useAliases, useCreateAlias, useUpdateAlias, useDeleteAlias, useSettings } from "@/api/hooks";
+import { ConfirmDialog } from "@/components/primitives";
 import { useUI } from "@/lib/store";
 import { randomLocal } from "@/lib/alias";
 import { Button, IconButton, Spinner } from "@/components/primitives";
@@ -33,9 +34,11 @@ export function AliasesPage() {
   function toggleAll() {
     setSelected(allSelected ? new Set() : new Set(list.map((a) => a.address)));
   }
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   async function bulkDelete() {
     const addrs = [...selected];
     setSelected(new Set());
+    setConfirmBulkDelete(false);
     await Promise.all(addrs.map((a) => del.mutateAsync(a).catch(() => {})));
     toast.success(`${addrs.length} alias${addrs.length > 1 ? "es" : ""} removed`);
   }
@@ -46,13 +49,13 @@ export function AliasesPage() {
     toast.success(`${addrs.length} alias${addrs.length > 1 ? "es" : ""} disabled`);
   }
 
-  const domains = settings.data?.alias_domains ?? [];
-  // Shape of generated addresses comes from the instance's ALIAS_SUFFIX.
-  const suffix = settings.data?.alias_suffix ?? "";
+  const domains = settings.data?.domains ?? [];
+  // Generated addresses carry the user's handle, so they route here by themselves.
+  const handle = settings.data?.user.handle ?? "";
   const [name, setName] = useState("");
   const [local, setLocal] = useState("");
   const [domain, setDomain] = useState("");
-  const dom = domain || settings.data?.primary_alias_domain || domains[0] || "";
+  const dom = domain || settings.data?.primary_domain || domains[0] || "";
 
   function generate() {
     setLocal(randomLocal());
@@ -98,14 +101,14 @@ export function AliasesPage() {
                 className="min-w-0 flex-1 bg-transparent outline-none"
               />
               <span className="shrink-0 font-mono text-xs text-faint">
-                {suffix ? `.${suffix}@` : "@"}
+                {handle ? `.${handle}@` : "@"}
               </span>
               <select
                 value={dom}
                 onChange={(e) => setDomain(e.target.value)}
                 className="shrink-0 bg-transparent font-mono text-xs text-muted outline-none"
               >
-                {domains.map((d) => (
+                {domains.map((d: string) => (
                   <option key={d} value={d}>
                     {d}
                   </option>
@@ -141,7 +144,7 @@ export function AliasesPage() {
                   <Button variant="ghost" size="sm" onClick={bulkDisable}>
                     <Ban size={15} /> Disable
                   </Button>
-                  <Button variant="danger" size="sm" onClick={bulkDelete}>
+                  <Button variant="danger" size="sm" onClick={() => setConfirmBulkDelete(true)}>
                     <Trash2 size={15} /> Delete
                   </Button>
                 </div>
@@ -184,6 +187,15 @@ export function AliasesPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onOpenChange={setConfirmBulkDelete}
+        title={`Remove ${selected.size} alias${selected.size === 1 ? "" : "es"}?`}
+        description="They disappear from your list; mail already received is kept. To bounce future mail instead, disable them rather than removing."
+        confirmLabel={`Remove ${selected.size}`}
+        onConfirm={() => void bulkDelete()}
+      />
     </div>
   );
 }
@@ -204,6 +216,7 @@ function AliasCard({
   const update = useUpdateAlias();
   const del = useDeleteAlias();
   const [name, setName] = useState(a.name ?? "");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   async function copy() {
     try {
@@ -297,14 +310,26 @@ function AliasCard({
         <IconButton
           onClick={(e) => {
             e.stopPropagation();
-            del.mutate(a.address);
-            toast.success("Alias removed");
+            setConfirmDelete(true);
           }}
           aria-label="Delete alias"
         >
           <Trash2 size={16} />
         </IconButton>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Remove ${a.address}?`}
+        description="It disappears from your list; mail already received is kept. To bounce future mail instead, disable it rather than removing."
+        confirmLabel="Remove alias"
+        onConfirm={() => {
+          del.mutate(a.address);
+          setConfirmDelete(false);
+          toast.success("Alias removed");
+        }}
+      />
     </motion.div>
   );
 }

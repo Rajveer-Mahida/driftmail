@@ -4,7 +4,10 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  redirect,
 } from "@tanstack/react-router";
+import { QueryClient } from "@tanstack/react-query";
+import { setupApi } from "@/api/setup";
 import { AppShell } from "@/components/AppShell";
 import { MailLayout } from "@/components/MailLayout";
 import { EmptyDetail } from "@/components/EmptyDetail";
@@ -22,6 +25,8 @@ const LoginPage = named(() => import("@/components/LoginPage"), "LoginPage");
 const SettingsPage = named(() => import("@/components/SettingsPage"), "SettingsPage");
 const DraftsPage = named(() => import("@/components/DraftsPage"), "DraftsPage");
 const AliasesPage = named(() => import("@/components/AliasesPage"), "AliasesPage");
+const SetupPage = named(() => import("@/components/setup/SetupPage"), "SetupPage");
+const UsersPage = named(() => import("@/components/UsersPage"), "UsersPage");
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return (
@@ -37,7 +42,40 @@ function Lazy({ children }: { children: React.ReactNode }) {
   );
 }
 
-const rootRoute = createRootRoute({ component: () => <Outlet /> });
+const rootRoute = createRootRoute({
+  component: () => <Outlet />,
+  /**
+   * An unclaimed deployment has no accounts, so /login would be a dead end —
+   * send people to the wizard instead. Asked once and cached: this is on the
+   * path of every navigation.
+   */
+  beforeLoad: async ({ location }) => {
+    const status = await queryClient
+      .fetchQuery({
+        queryKey: ["setup", "status"],
+        queryFn: setupApi.status,
+        staleTime: Infinity,
+      })
+      .catch(() => null);
+    if (!status) return;
+
+    const onSetup = location.pathname.startsWith("/setup");
+    if (!status.claimed && !onSetup) throw redirect({ to: "/setup" });
+    if (status.claimed && status.complete && onSetup) throw redirect({ to: "/" });
+  },
+});
+
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup",
+  // A sibling of /login, outside the shell: AppShell runs the session gate, and
+  // the wizard has to render before a session can exist.
+  component: () => (
+    <Lazy>
+      <SetupPage />
+    </Lazy>
+  ),
+});
 
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -107,15 +145,44 @@ const aliasesRoute = createRoute({
   ),
 });
 
+const usersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/users",
+  component: () => (
+    <Lazy>
+      <UsersPage />
+    </Lazy>
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
+  setupRoute,
   loginRoute,
   shellRoute.addChildren([
     mailLayoutRoute.addChildren([indexRoute, mailRoute]),
     settingsRoute,
     draftsRoute,
     aliasesRoute,
+    usersRoute,
   ]),
 ]);
+
+/**
+ * One client for the whole app.
+ *
+ * It lives here rather than in main.tsx because the root route's beforeLoad
+ * needs it: two instances would each fetch the setup status, and could disagree
+ * about whether this deployment has been claimed.
+ */
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 10_000,
+      retry: (count, err) => ((err as { status?: number })?.status === 401 ? false : count < 2),
+      refetchOnWindowFocus: true,
+    },
+  },
+});
 
 export const router = createRouter({
   routeTree,

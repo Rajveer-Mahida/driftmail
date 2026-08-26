@@ -1,18 +1,32 @@
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError } from "@/api/client";
 import { useNavigate } from "@tanstack/react-router";
 import * as Switch from "@radix-ui/react-switch";
+import * as Dialog from "@radix-ui/react-dialog";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { ArrowLeft, Check, Sun, Moon, Mail, Globe, Palette, PenLine, ShieldCheck, Bell } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  Sun,
+  Moon,
+  Mail,
+  Globe,
+  Palette,
+  PenLine,
+  ShieldCheck,
+  ShieldAlert,
+  Bell,
+} from "lucide-react";
 import {
   useSettings,
   useSetSettings,
   useDomains,
-  useConnectDomain,
   useDisconnectDomain,
 } from "@/api/hooks";
 import { useUI } from "@/lib/store";
-import { Button, Spinner } from "@/components/primitives";
+import { PasswordInput, Button, Spinner, Tip } from "@/components/primitives";
 import { RulesManager } from "@/components/RulesManager";
 import { pushSupported, pushEnabled, enablePush, disablePush } from "@/lib/push";
 import { cn } from "@/lib/utils";
@@ -40,6 +54,8 @@ export function SettingsPage() {
 
   const s = settings.data;
 
+  const isAdmin = s?.user.role === "admin";
+
   const [sig, setSig] = useState("");
   useEffect(() => {
     if (s?.signature !== undefined) setSig(s.signature);
@@ -58,6 +74,11 @@ export function SettingsPage() {
         <h1 className="mb-8 font-display text-3xl font-semibold tracking-tight">Settings</h1>
 
         <div className="space-y-4">
+          {/* Instance-wide controls are admin-only on the server, so a
+              non-admin gets nothing but 403s from them — showing them anyway
+              renders as the word "forbidden" where content should be. */}
+          {isAdmin && (
+          <>
           {/* Replies */}
           <Section icon={<Mail size={18} />} title="Replies" desc="Allow sending replies from this inbox.">
             <Switch.Root
@@ -89,6 +110,8 @@ export function SettingsPage() {
               <Switch.Thumb className="block h-5 w-5 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-6" />
             </Switch.Root>
           </Section>
+          </>
+          )}
 
           {/* Privacy */}
           <Section
@@ -118,14 +141,14 @@ export function SettingsPage() {
             stack
           >
             <div className="mt-3 flex flex-wrap gap-2">
-              {s?.alias_domains.map((d) => {
-                const active = s.primary_alias_domain === d;
+              {s?.domains.map((d: string) => {
+                const active = s.primary_domain === d;
                 return (
                   <button
                     key={d}
                     onClick={() =>
                       save.mutate(
-                        { primary_alias_domain: d },
+                        { primary_domain: d },
                         { onSuccess: () => toast.success(`Primary domain: ${d}`) },
                       )
                     }
@@ -144,8 +167,9 @@ export function SettingsPage() {
             </div>
           </Section>
 
-          {/* Domains — only when CF_TOKEN is configured on the worker */}
-          {s?.domain_management && <DomainsSection />}
+          {/* Domains — admin-only (the whole API is), and only once a
+              Cloudflare token is stored. */}
+          {isAdmin && s?.domain_management && <DomainsSection />}
 
           {/* Appearance */}
           <Section icon={<Palette size={18} />} title="Appearance" desc="Switch between light and dark.">
@@ -250,6 +274,8 @@ export function SettingsPage() {
           </Section>
 
           <RulesManager />
+
+          {isAdmin && <DangerZone />}
         </div>
       </div>
     </div>
@@ -291,20 +317,65 @@ function Section({
 }
 
 /**
- * Connect a domain's mail to this worker, without leaving the app.
+ * The mail domains this instance handles.
  *
- * Only rendered when the worker has a CF_TOKEN — every /api/domains route
- * returns 503 otherwise. Connecting enables Email Routing (which writes the MX
- * and SPF records) and points the zone's catch-all here.
+ * Only rendered once a Cloudflare API token is stored — every /api/domains
+ * route returns 503 otherwise. Adding a domain happens in the setup wizard,
+ * which has the room to explain what enabling Email Routing does to the zone's
+ * existing MX records; this is the after-the-fact view.
  */
 function DomainsSection() {
+  const qc = useQueryClient();
   const domains = useDomains(true);
-  const connect = useConnectDomain();
   const disconnect = useDisconnectDomain();
   const [busy, setBusy] = useState<string | null>(null);
+  /** The domain whose Remove has been clicked once — confirmation pending. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [mxConfirm, setMxConfirm] = useState<{ zoneId: string; name: string; mx: string[] } | null>(
+    null,
+  );
 
-  const zones = domains.data?.zones ?? [];
+  const zones = useQuery({
+    queryKey: ["domains", "zones"],
+    queryFn: api.listZones,
+    enabled: adding,
+    staleTime: 30_000,
+  });
+
+  async function add(zoneId: string, name: string, confirmOverwriteMx = false) {
+    setBusy(name);
+    try {
+      await api.addDomain({ zoneId, domain: name, confirmOverwriteMx });
+      toast.success(`${name} now routes here`, {
+        description: "Mail to any address on it will arrive in this inbox.",
+      });
+      setAdding(false);
+      setMxConfirm(null);
+      await qc.invalidateQueries({ queryKey: ["domains"] });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+    } catch (err) {
+      const body = (err as ApiError & { body?: { error?: string; currentMx?: string[] } }).body;
+      if (body?.error === "mx_in_use" && body.currentMx) {
+        setMxConfirm({ zoneId, name, mx: body.currentMx });
+      } else {
+        toast.error((err as Error).message);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const rows = domains.data?.domains ?? [];
   const worker = domains.data?.worker;
+
+  const STATE_LABEL: Record<string, string> = {
+    ready: "receiving mail",
+    pending_dns: "waiting for DNS",
+    enabling: "enabling…",
+    error: "needs attention",
+    none: "not routing yet",
+  };
 
   return (
     <Section
@@ -312,82 +383,213 @@ function DomainsSection() {
       title="Domains"
       desc={
         worker
-          ? `Route a domain's mail to this worker (${worker}).`
-          : "Route a domain's mail to this worker."
+          ? `Mail for these domains arrives at this worker (${worker}).`
+          : "Mail domains handled by this instance."
       }
       stack
     >
       <div className="mt-3 space-y-2">
         {domains.isPending && (
           <div className="flex items-center gap-2 text-sm text-muted">
-            <Spinner className="text-accent" /> Loading your zones…
+            <Spinner className="text-accent" /> Loading…
           </div>
         )}
 
         {domains.isError && (
           <p className="text-sm text-muted">
             {(domains.error as Error).message ||
-              "Couldn't reach Cloudflare — check the CF_TOKEN scopes."}
+              "Couldn't reach Cloudflare — check the token's scopes."}
           </p>
         )}
 
-        {domains.isSuccess && zones.length === 0 && (
+        {domains.isSuccess && rows.length === 0 && (
           <p className="text-sm text-muted">
-            No zones visible to this token. It needs Zone:Read for the domains you want.
+            No domains yet, so nothing can arrive. Add one to start receiving mail.
           </p>
         )}
 
-        {zones.map((z) => (
-          <div
-            key={z.id}
-            className="flex items-center gap-3 rounded-xl border border-border bg-bg px-4 py-3"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-mono text-sm">{z.name}</p>
-              <p className="text-xs text-muted">
-                {z.routing.enabled ? "Email Routing enabled" : "Email Routing not enabled"}
-              </p>
+        {rows.map((d) => {
+          const removable = rows.length > 1 && d.is_primary !== 1;
+          return (
+            <div
+              key={d.domain}
+              className="flex items-center gap-3 rounded-xl border border-border bg-bg px-4 py-3"
+            >
+              {/* Name + badges on one line, status on its own line below — the
+                  previous single-line layout wrapped into vertical soup as soon
+                  as a domain had both a badge and an error. */}
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono text-sm">{d.domain}</span>
+                  {d.is_primary === 1 && (
+                    <span className="shrink-0 rounded-full bg-accent/10 px-2 py-0.5 text-xs text-accent">
+                      primary
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-xs text-muted" title={d.routing_error ?? undefined}>
+                  {STATE_LABEL[d.routing_state] ?? d.routing_state}
+                  {d.send_state === "verified" && " · sending verified"}
+                  {d.routing_error && ` · ${d.routing_error}`}
+                </p>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-1.5">
+                {d.is_primary !== 1 && (
+                  <Button
+                    size="sm"
+                    disabled={busy === `primary:${d.domain}`}
+                    onClick={() => {
+                      setBusy(`primary:${d.domain}`);
+                      api
+                        .makePrimaryDomain(d.domain)
+                        .then(async () => {
+                          toast.success(`${d.domain} is now the primary domain`);
+                          await qc.invalidateQueries({ queryKey: ["domains"] });
+                          await qc.invalidateQueries({ queryKey: ["settings"] });
+                        })
+                        .catch((e) => toast.error((e as Error).message))
+                        .finally(() => setBusy(null));
+                    }}
+                  >
+                    Make primary
+                  </Button>
+                )}
+                {removable ? (
+                  <Button size="sm" onClick={() => setConfirming(d.domain)}>
+                    Remove
+                  </Button>
+                ) : (
+                  <Tip
+                    label={
+                      rows.length === 1
+                        ? "The only domain can't be removed — add another first."
+                        : "The primary domain can't be removed — make another primary first."
+                    }
+                  >
+                    <span>
+                      <Button size="sm" disabled>
+                        Remove
+                      </Button>
+                    </span>
+                  </Tip>
+                )}
+              </div>
             </div>
-            {z.routing.enabled ? (
-              <Button
-                disabled={busy === z.id}
-                onClick={() => {
-                  setBusy(z.id);
-                  disconnect.mutate(z.id, {
-                    onSuccess: () => toast.success(`Email Routing disabled for ${z.name}`),
-                    onError: (e) => toast.error((e as Error).message),
-                    onSettled: () => setBusy(null),
-                  });
-                }}
-              >
-                {busy === z.id ? "Working…" : "Disconnect"}
+          );
+        })}
+
+        {/* Removal is destructive enough for a real dialog: the inline confirm
+            squeezed into the row and pushed everything else into wrapping. */}
+        <Dialog.Root open={!!confirming} onOpenChange={(o) => !o && setConfirming(null)}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+            <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-elevated p-5 shadow-[var(--shadow-lg)]">
+              <Dialog.Title className="font-display text-lg font-semibold">
+                Remove {confirming}?
+              </Dialog.Title>
+              <Dialog.Description className="mt-2 text-sm text-muted">
+                Mail sent to any address on {confirming} will stop arriving here. Messages you
+                already received are kept.
+              </Dialog.Description>
+              <div className="mt-5 flex justify-end gap-2">
+                <Button onClick={() => setConfirming(null)}>Keep it</Button>
+                <Button
+                  variant="primary"
+                  disabled={!!confirming && busy === confirming}
+                  onClick={() => {
+                    const domain = confirming!;
+                    setBusy(domain);
+                    disconnect.mutate(domain, {
+                      onSuccess: (res: unknown) => {
+                        const r = res as { warning?: string };
+                        if (r.warning) toast.warning(r.warning, { duration: 12000 });
+                        else toast.success(`${domain} no longer routes here`);
+                      },
+                      onError: (e) => toast.error((e as Error).message),
+                      onSettled: () => {
+                        setBusy(null);
+                        setConfirming(null);
+                      },
+                    });
+                  }}
+                >
+                  {confirming && busy === confirming ? "Removing…" : "Remove domain"}
+                </Button>
+              </div>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+
+        {mxConfirm && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+            <p className="mb-1 font-medium">{mxConfirm.name} currently receives mail elsewhere.</p>
+            <p className="mb-2 text-xs text-muted">These MX records will be replaced:</p>
+            <ul className="mb-3 list-disc pl-5 font-mono text-xs">
+              {mxConfirm.mx.map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+            </ul>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => setMxConfirm(null)}>
+                Cancel
               </Button>
-            ) : (
               <Button
+                size="sm"
                 variant="primary"
-                disabled={busy === z.id}
-                onClick={() => {
-                  setBusy(z.id);
-                  connect.mutate(z.id, {
-                    onSuccess: (r) =>
-                      toast.success(`${z.name} now routes here`, {
-                        description: r.sending
-                          ? "MX and SPF records added; sending enabled."
-                          : "MX and SPF records added. Enable Email Sending to send replies.",
-                      }),
-                    onError: (e) => toast.error((e as Error).message),
-                    onSettled: () => setBusy(null),
-                  });
-                }}
+                onClick={() => void add(mxConfirm.zoneId, mxConfirm.name, true)}
               >
-                {busy === z.id ? "Connecting…" : "Connect"}
+                Yes, deliver mail here instead
               </Button>
-            )}
+            </div>
           </div>
-        ))}
+        )}
+
+        {adding ? (
+          <div className="space-y-2 rounded-xl border border-border bg-bg p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+                Domains on your Cloudflare account
+              </span>
+              <button
+                type="button"
+                className="text-xs text-muted hover:text-fg"
+                onClick={() => setAdding(false)}
+              >
+                Close
+              </button>
+            </div>
+            {zones.isPending && (
+              <div className="flex items-center gap-2 text-sm text-muted">
+                <Spinner className="text-accent" /> Loading…
+              </div>
+            )}
+            {zones.isError && (
+              <p className="text-sm text-muted">{(zones.error as Error).message}</p>
+            )}
+            {(zones.data?.zones ?? [])
+              .filter((z) => !z.added)
+              .map((z) => (
+                <div key={z.id} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm">{z.name}</span>
+                  {z.currentMx.length > 0 && (
+                    <span className="shrink-0 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-700 dark:text-amber-300">
+                      receives elsewhere
+                    </span>
+                  )}
+                  <Button size="sm" disabled={busy === z.name} onClick={() => void add(z.id, z.name)}>
+                    {busy === z.name ? "Adding…" : "Add"}
+                  </Button>
+                </div>
+              ))}
+          </div>
+        ) : (
+          <Button onClick={() => setAdding(true)}>Add a domain</Button>
+        )}
 
         <p className="pt-1 text-xs text-faint">
-          Connecting writes MX and SPF records to the zone and sends all of its mail here.
+          Every address on an added domain arrives here. Removing a domain stops its mail and
+          keeps messages already received.
         </p>
       </div>
     </Section>
@@ -428,5 +630,132 @@ function NotificationsToggle() {
       {busy ? <Spinner /> : <Bell size={15} />}
       {enabled ? "Disable" : "Enable"}
     </Button>
+  );
+}
+
+
+/**
+ * Factory reset — wipe the instance back to /setup.
+ *
+ * Two gates on purpose: typing RESET keeps a wandering click harmless, and the
+ * password re-entry keeps a hijacked or forgotten-open session from being
+ * enough. The server enforces both; this dialog just collects them.
+ */
+function DangerZone() {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function reset() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/reset", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm, password }),
+      });
+      const body = (await res.json()) as { error?: string; warnings?: string[] };
+      if (!res.ok) {
+        toast.error(body.error ?? "Reset failed");
+        return;
+      }
+      for (const w of body.warnings ?? []) toast.warning(w, { duration: 15000 });
+      // The session, the account and the setup-status cache are all gone with
+      // the data — a full load lands cleanly on /setup.
+      window.location.href = "/setup";
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-8 space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-wider text-red-700/70 dark:text-red-400/80">
+        Danger zone
+      </p>
+
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl border border-red-500/20 bg-red-500/8 p-5 dark:border-red-500/15 dark:bg-red-950/35"
+      >
+        <div className="flex items-center gap-4">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-red-500/10 text-red-600 dark:text-red-400">
+            <ShieldAlert size={18} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-medium text-fg">Factory reset</h3>
+            <p className="text-sm text-muted">
+              Erase everything — mail, people, domains, credentials — and return this deployment to
+              its setup screen.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            className="shrink-0 border-red-500/25 text-red-700 hover:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/10"
+            onClick={() => setOpen(true)}
+          >
+            Reset…
+          </Button>
+        </div>
+      </motion.div>
+
+      <Dialog.Root
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o) {
+            setConfirm("");
+            setPassword("");
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-elevated p-5 shadow-[var(--shadow-lg)]">
+            <Dialog.Title className="font-display text-lg font-semibold">
+              Reset this instance?
+            </Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-muted">
+              Every message, attachment, person, domain and credential is permanently deleted, and
+              Cloudflare stops routing mail here. The deployment returns to its first-run setup.
+              There is no undo.
+            </Dialog.Description>
+
+            <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-muted">
+              Type RESET
+            </label>
+            <input
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="mt-1.5 w-full rounded-[var(--radius-lg)] border border-border bg-bg px-3 py-2 font-mono text-sm outline-none focus:border-accent-ring"
+            />
+
+            <label className="mt-3 block text-xs font-semibold uppercase tracking-wider text-muted">
+              Your password
+            </label>
+            <PasswordInput
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1.5 w-full rounded-[var(--radius-lg)] border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent-ring"
+            />
+
+            <div className="mt-5 flex justify-end gap-2">
+              <Button onClick={() => setOpen(false)}>Cancel</Button>
+              <Button
+                variant="primary"
+                disabled={confirm !== "RESET" || !password || busy}
+                onClick={() => void reset()}
+              >
+                {busy ? "Erasing…" : "Erase everything"}
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </div>
   );
 }

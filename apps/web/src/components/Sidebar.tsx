@@ -19,6 +19,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   LogOut,
+  Users,
   X,
 } from "lucide-react";
 import type { ViewName } from "@email/shared";
@@ -84,12 +85,12 @@ export function Sidebar() {
   }
 
   async function genAlias() {
-    const domain = settings.data?.primary_alias_domain;
+    const domain = settings.data?.primary_domain;
     if (!domain) {
-      toast.error("No alias domain configured", { description: "Set ALIAS_DOMAINS on the worker." });
+      toast.error("No mail domain yet", { description: "Add one in Settings → Domains." });
       return;
     }
-    const alias = randomAlias(domain, settings.data?.alias_suffix ?? "");
+    const alias = randomAlias(domain, settings.data?.user.handle ?? "");
     api.createAlias({ address: alias }).catch(() => {}); // track it in the registry
     try {
       await navigator.clipboard.writeText(alias);
@@ -252,6 +253,19 @@ export function Sidebar() {
 
       {/* Footer (pinned) */}
       <div className="flex flex-col gap-0.5 border-t border-border pt-3">
+        {/* Managing people is an administrator's job, so nobody else sees it. */}
+        {settings.data?.user.role === "admin" && (
+          <SideItem
+            active={pathname === "/users"}
+            collapsed={collapsed}
+            icon={<Users size={18} />}
+            label="People"
+            onClick={() => {
+              setMobileNav(false);
+              navigate({ to: "/users" });
+            }}
+          />
+        )}
         <SideItem
           active={onSettings}
           collapsed={collapsed}

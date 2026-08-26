@@ -1,263 +1,210 @@
 # Driftmail
 
-A Gmail-like email client with smooth motion, running entirely on Cloudflare:
-one Worker serves the SPA, the JSON API, inbound email ingestion (Email
-Routing), and the undo-send cron.
+A private inbox that runs entirely on your own Cloudflare account. One Worker
+serves the app, receives your mail, and configures its own delivery.
 
-- **`apps/web`** — Vite + React 19 SPA (TanStack Router + Query, Tailwind v4,
-  Framer Motion). Pure static assets, zero SSR.
-- **`apps/api`** — Hono Cloudflare Worker: JSON API + Email Routing handler +
-  scheduled sends. D1 for mail/labels/aliases, R2 for raw `.eml` + attachments.
-- **`packages/shared`** — the TypeScript JSON contract shared by both.
+Deploy it, then set it up in the browser — no config files, no
+`wrangler secret put`, no dashboard clicking.
 
-## Architecture
+Every address on your domain arrives here. `you@`, `netflix.you@`,
+`you-uber@`, `anything@` — no per-address setup, ever.
 
-```
-<host>/api/*  → Hono worker (run_worker_first)
-<host>/*      → built SPA assets (single-page-application fallback)
-inbound mail  → Email Routing → the same worker's email() handler → D1 + R2
-```
+---
 
-Single worker, single hostname; the session cookie stays same-origin.
+## Setting it up
 
-Each deployment is fully independent — its own worker, D1, R2 and hostname.
-Nothing is shared between them, so running one instance per domain is the
-normal case, not a special mode.
+1. **Deploy it.**
 
-## Deployment
+   From a clone — name your resources after your domain first, then deploy:
 
-Deployments live in `instances.jsonc` as [wrangler environments][envs], one
-`env.<name>` block per domain. That file is **gitignored** — it holds your
-hostnames, database ids and forwarding addresses, none of which belong in a
-repo. The tracked template is `instances.example.jsonc`.
+   ```bash
+   pnpm install
+   pnpm provision example.com    # creates example-com-driftmail (D1 + R2)
+   pnpm run deploy               # `pnpm deploy` is a built-in pnpm command
+   ```
 
-[envs]: https://developers.cloudflare.com/workers/wrangler/environments/
+   Or click the Deploy to Cloudflare button, and rename the database and bucket
+   in its form. **A D1 database can never be renamed afterwards** — there's no
+   `wrangler d1 rename` and no way to do it from the dashboard — so this is the
+   one moment it can be got right.
+2. **Open it in a browser.** You'll land on `/setup`.
+3. **Paste a Cloudflare API token.** Either kind works — an account-owned token
+   (Manage Account → Account API Tokens; survives you leaving the account) or a
+   user token (My Profile → API Tokens). The wizard lists what the token must be
+   able to do and has a **Check permissions** button that tests it against the
+   live API — the check is the authority, since Cloudflare's two token editors
+   spell the same permissions differently. The token then turns on Email
+   Routing, writes your MX and SPF records, and points your domain's catch-all
+   at this Worker.
+4. **Pick your domain, then your password.** That's the whole thing.
 
-Prerequisite: the domain's zone already exists in your Cloudflare account, and
-you've run `wrangler login`. Then:
+Sending is optional and comes later in the wizard. Receiving works without it.
 
-```sh
-pnpm instance:new <name>      # prompts, provisions D1 + R2, sets the secrets
-pnpm instance:deploy <name>   # builds the SPA and deploys
-```
+### Why the token is the first step
 
-`instance:new` asks for the hostname, your mail domain(s) and which addresses to
-accept, creates `<name>-db` and `<name>-email-cache`, writes the `env.<name>`
-block, generates a random `AUTH_SECRET`, and prompts for a login password.
+It is not only configuration — it is how the app knows the person filling in the
+form owns this deployment. A freshly deployed Worker has no accounts, so
+whoever reaches it first would otherwise become the administrator. The claim
+only completes if the token belongs to the Cloudflare account that runs the
+Worker serving that request, which is something an attacker cannot produce
+without already controlling it.
 
-`instance:deploy` derives the SPA's public origin from the instance's route, so
-`VITE_PUBLIC_ORIGIN` never has to be set by hand. Useful flags:
+If you'd rather not give a self-hosted app a DNS-capable token, set a
+`SETUP_TOKEN` secret on the Worker after deploying and use that instead. You
+then add DNS records by hand, and the setup-token path stops working 24 hours
+after the deployment first starts serving traffic, so an instance you forgot
+about can't be claimed later.
 
-```sh
-pnpm instance:deploy <name> --dry-run          # resolve everything, upload nothing
-pnpm instance:deploy <name> --skip-migrations  # DB predates D1 migration bookkeeping
-```
+---
 
-`wrangler.jsonc` holds the structural block (worker entrypoint, assets, compat
-date, cron) and is what `pnpm dev:api` runs against locally. `instances.jsonc`
-repeats that block for your real deployments, because wrangler has no `extends`.
-`pnpm check:config` fails if the two drift, and runs as part of `pnpm typecheck`.
+## How addresses are routed
 
-Connecting a domain's email is a separate step at the end — one command, see
-[below](#connect-your-domains-email).
+Everyone on the instance has a **handle**. Mail is matched in this order, and
+the first match wins:
 
-## Configuration reference
+| Address | Goes to | Because |
+|---|---|---|
+| `billing@example.com` | whoever owns that alias | an alias you created |
+| `billing+vat@example.com` | the same person | the `+tag` is stripped first |
+| `rajveer@example.com` | rajveer | it's their handle |
+| `rajveer.netflix@example.com` | rajveer | their handle appears in the local part |
+| `netflix-rajveer@example.com` | rajveer | position doesn't matter |
+| `meera.aws@example.com` | meera | same rule, different person |
+| `anything-else@example.com` | the domain's catch-all owner | nothing else claimed it |
 
-### Required
+Handles can't contain `.`, `-` or `+`, because those are the separators the
+router splits on — which is what makes the rules unambiguous rather than a pile
+of tie-breaks. When two handles appear in one address, the first one wins.
 
-| Name | Type | What it does | How to get it |
-|---|---|---|---|
-| `AUTH_PASSWORD` | secret | password for the login screen | **you choose** — long and random |
-| `AUTH_SECRET` | secret | signs the session cookie | **generate:** `openssl rand -hex 32` |
-| `ALIAS_DOMAINS` | var | comma-separated domain(s) you receive mail on; entries may be globs | your domain(s), e.g. `example.com`, or `*` for any |
+Not sure where something would land? **People → Where would mail go?** answers
+it, and shows which rule decided.
 
-`instance:new` prompts for these. Everything below is optional and has a working
-default, so a new instance needs nothing else to start receiving mail.
+---
 
-Login **fails closed** if either secret is missing — there is no default signing
-key. Use a different `AUTH_SECRET` per instance: sessions carry no identity, so
-a shared secret makes cookies interchangeable between deployments.
+## Sending
 
-### Optional
+Chosen in the wizard, changeable in Settings:
 
-| Name | Type | What it does | Default |
-|---|---|---|---|
-| `ALLOWED_EMAILS` | var | which addresses on your domains to accept; `*` is a wildcard | empty = **accept every address** |
-| `ALIAS_SUFFIX` | var | shape of addresses the alias generator suggests, `<name>.<suffix>@<domain>` | empty = `<name>@<domain>` |
-| `REPLY_FROM` | var | from-address for compose when no alias applies | `reply@<first ALIAS_DOMAINS entry>` |
-| `FORWARD_TO` | var | also forward accepted mail to this address | off; must be verified under Email Routing → Destination addresses |
-| `FALLBACK_FORWARD_TO` | var | where rejected mail goes | off = reject |
-| `VAPID_SUBJECT` | var | web push contact, a `mailto:` URI | empty = push disabled |
-| `VAPID_PRIVATE_JWK` | secret | web push signing key | **generate:** `pnpm generate-vapid` |
-| `ANTHROPIC_API_KEY` | secret | AI features (summarize, smart reply) | [console.anthropic.com](https://console.anthropic.com) |
-| `AI_MODEL` | secret/var | model for AI features | `claude-haiku-4-5` |
+| | Cost | Setup |
+|---|---|---|
+| **Resend** *(recommended)* | 3,000/month free | Paste an API key; Driftmail writes the verification records for you |
+| **Cloudflare Email Sending** | Free only to destination addresses you've verified; anyone else needs Workers Paid | One click, if your DNS is on Cloudflare |
+| **Receive only** | — | Nothing. Compose and reply stay disabled |
 
-### Which mail gets accepted
+Resend is the default because "send to anyone" is what a mail client does, and
+that is the part Cloudflare charges for.
 
-Two vars decide, in order:
+---
 
-1. **`ALIAS_DOMAINS`** — the recipient's domain must match an entry, or the mail
-   is rejected (or sent to `FALLBACK_FORWARD_TO`). Entries may be globs, so `*`
-   accepts any domain and `*.example.com` accepts every subdomain. `*` is still
-   safe: Cloudflare only routes mail for zones you actually own.
-2. **`ALLOWED_EMAILS`** — empty accepts *every* address on those domains, which
-   makes the inbox a true catch-all. Otherwise the recipient must match an
-   entry, where `*` matches any run of characters.
+## Adding people
 
-So `ALLOWED_EMAILS="*.mail@example.com"` accepts only `<anything>.mail@example.com`,
-and leaving it empty accepts everything on `example.com`.
+**People → Add someone.** They get their own inbox — mail, labels, drafts,
+rules and aliases are all private to them. You're handed a temporary password to
+pass on, shown once; they're required to change it when they first sign in.
 
-`ALIAS_SUFFIX` does **not** affect this — it only shapes the addresses the alias
-generator suggests in the UI.
+There's no emailed invite on purpose: outbound sending may not be verified at
+the moment you add the second person, which would make an emailed link the one
+flow guaranteed to be broken on day one.
 
-### Derived — you never set these
+---
 
-| Name | Where it comes from |
+## Where your secrets live
+
+**The database is the secret store.** Your Cloudflare API token, your Resend
+key, and the session signing key are all rows in D1. Anyone who can read that
+database — anyone with access to your Cloudflare account, or anyone who can
+deploy code to this Worker — can read them in plaintext.
+
+That is the same exposure as `wrangler secret`: those aren't shown in the
+dashboard either, but anyone who can deploy the Worker can print them. Moving
+them into D1 doesn't widen the blast radius; it makes it visible.
+
+Encrypting them under a key stored *in the same database* would not change any
+of that, so Driftmail doesn't pretend to. What actually helps:
+
+- **Scope the token.** The wizard nudges you toward a token limited to the one
+  zone you use for mail. A token that can't touch your other domains is worth
+  more than encryption around one that can.
+- **Rotate it.** Settings → Domains has replace and revoke.
+- **Optionally, bring your own key.** Set a `CONFIG_ENC_KEY` secret on the
+  Worker and stored credentials are wrapped with AES-GCM under it. That key
+  lives outside the database, so it *is* a real boundary — against a leaked D1
+  export, specifically. Off by default, and defence in depth rather than the
+  thing standing between you and disaster.
+
+---
+
+## Resource names
+
+`pnpm provision <domain>` names everything after the domain, so one Cloudflare
+account can host several instances without them colliding:
+
+| | |
 |---|---|
-| the VAPID public key | derived from `VAPID_PRIVATE_JWK`, so the pair can't drift |
-| `VITE_PUBLIC_ORIGIN` | derived from the instance's route by `pnpm instance:deploy` |
-| `DB`, `EMAIL_CACHE`, `EMAIL`, `ASSETS` bindings | declared in the wrangler config; `instance:new` provisions the resources |
-| D1 `database_id` | written by `instance:new` |
+| Worker | `example-com-driftmail` |
+| D1 database | `example-com-driftmail` |
+| R2 bucket | `example-com-driftmail-mail` |
 
-Secrets go in via `wrangler secret put <NAME> -c instances.jsonc -e <name>`, or
-Worker → Settings → Variables and Secrets; vars live in the instance config.
+Dots aren't valid in Cloudflare resource names, so they become hyphens. The
+whole domain is used rather than just `example`, so `example.com` and
+`example.org` don't fight over the same name.
 
-## Connect your domain's email
+The Worker name matters beyond tidiness: Cloudflare's catch-all rule points at a
+Worker **by name**, so two instances sharing one would silently steal each
+other's mail.
 
-One command, per instance:
-
-```sh
-pnpm instance:mail <name>            # domains + worker read from instances.jsonc
-pnpm instance:mail <name> --dry-run  # print the commands, run nothing
-```
-
-Or name the domain and worker directly, for a worker that has no
-`instances.jsonc` entry:
-
-```sh
-pnpm instance:mail --domain example.com --worker driftmail
-```
-
-It shows exactly what will change and asks **y/N** first, because this writes DNS
-records and redirects real mail. `pnpm instance:new` offers the same step at the
-end. Under the hood, per domain:
-
-```sh
-wrangler email routing enable <domain>          # adds and locks the MX + SPF records
-# catch-all → worker, via the API (see below)
-wrangler email sending enable <domain>          # outbound (compose/reply)
-```
-
-**The catch-all step needs an API token.** `wrangler` refuses it —
-`wrangler email routing rules update <domain> catch-all --action-type worker`
-fails with *"Catch-all rule only supports 'forward' or 'drop' action types"* —
-even though the REST API accepts `worker` and the dashboard offers **Send to a
-Worker** for catch-alls. So that one step goes over the API instead:
-
-```sh
-export CLOUDFLARE_API_TOKEN=...   # Zone:Read + Email Routing Rules:Edit
-pnpm instance:mail <name>
-```
-
-Without a token the other steps still run, and the command prints the two-click
-dashboard alternative: zone → Email → Email Routing → Routing rules → Catch-all
-→ Edit → **Send to a Worker**. The in-app Domains UI is unaffected — it already
-calls the API directly.
-
-Catch-all is safe: mail failing the checks above is rejected or forwarded to
-`FALLBACK_FORWARD_TO`. But note that with `ALLOWED_EMAILS` empty, "fails the
-checks" only means *wrong domain* — every address on your own domains will be
-ingested, spam included.
-
-Any `FORWARD_TO`/`FALLBACK_FORWARD_TO` destination must still be verified under
-Email Routing → Destination addresses.
-
-## Domains and DNS
-
-The two things people expect to be linked are not:
-
-> **The web hostname and the mail domain are independent.** Email Routing selects
-> workers by *account*, not by hostname, so mail for `example.com` is delivered to
-> a worker still sitting on `workers.dev`. **You do not need a custom domain for
-> email to work.**
-
-| What | How it gets set up |
-|---|---|
-| **Web hostname** | `routes[].pattern` in the instance's `env` block; `pnpm instance:deploy` attaches the custom domain and Cloudflare creates that DNS record itself. A worker with no route stays on `<worker>.<subdomain>.workers.dev`, and you can attach one later via Worker → Settings → Domains & Routes → **Add Custom Domain**. The zone must be in your account. |
-| **Mail records (MX, SPF, DKIM)** | Created by enabling Email Routing — `pnpm instance:mail` above, or the dashboard. Never hand-written. Inspect them with `wrangler email routing dns get <domain>`. |
-
-Requirements: the domain must be a zone in your Cloudflare account using
-Cloudflare DNS. Propagation is usually 5–15 minutes.
-
-### Managing domains from inside the app (optional)
-
-You can also do all of the above from Settings → **Domains** instead of a
-terminal — useful for managing domains on a deployment you don't have checked
-out. It is off unless you set a `CF_TOKEN` secret on the worker; without it
-every `/api/domains` route returns 503 and the section is hidden.
-
-| Var | What it is |
-|---|---|
-| `CF_TOKEN` | secret — a Cloudflare API token |
-| `CF_ACCOUNT_ID` | optional, only needed when the token spans several accounts |
-| `CF_WORKER_NAME` | must match the deployed Worker name (default `driftmail`) — it is the value sent to the routing-rule API, and a Worker cannot read its own script name |
-
-Token scopes: `Zone:Read`, `Email Routing Rules:Edit`,
-`Email Routing Addresses:Edit`, plus `DNS:Edit` and `DNS Settings:Edit` so it can
-create the MX/SPF records.
-
-> **Understand what this stores.** That token lets the app edit DNS on your
-> zones, and it sits behind a single shared password. Anyone who gets into the
-> app can repoint your MX or pass a DNS-01 challenge — that is domain takeover,
-> not just mail access. Scope the token to the specific zones you use, keep
-> `AUTH_PASSWORD` long and random, and leave `CF_TOKEN` unset if you are happy
-> using `pnpm instance:mail` from a terminal.
-
-None of these are declared in `wrangler.jsonc` or `.dev.vars.example` on purpose:
-anything listed there becomes a **required** field in the deploy form. Add them
-after deploying, under Worker → Settings → Variables and Secrets.
-
-Then open the app, log in with `AUTH_PASSWORD`, and generate your first alias.
+Re-running `provision` is safe — it adopts resources that already exist rather
+than creating duplicates, and rewrites `wrangler.jsonc` in place, comments and
+all.
 
 ## Local development
 
-```sh
+```bash
 pnpm install
-
-# 1. API worker — local D1, never touches production
-wrangler login                  # once, for deploys
-cp .dev.vars.example .dev.vars  # set AUTH_PASSWORD + AUTH_SECRET
-pnpm db:local                   # apply migrations to the local D1
-pnpm dev:api                    # → http://localhost:8787
-
-# 2. SPA (Vite proxies /api → :8787)
-pnpm dev                        # → http://localhost:5173
+pnpm db:local          # apply migrations to the local D1
+pnpm dev:api           # the Worker, on :8787
+pnpm dev               # the SPA, on :5173 (proxies /api to :8787)
 ```
 
-Log in with `AUTH_PASSWORD`.
+Then open <http://localhost:5173/setup>. There's no real hostname for the
+ownership check to verify against locally, so put `SETUP_TOKEN=dev` in
+`.dev.vars` and claim the instance with that.
 
-To work against a real instance's remote D1/R2 instead — real data, real
-writes — name it explicitly: `pnpm dev:api:remote <name>`.
-
-```sh
-pnpm test         # inbound-gate, header-parsing and VAPID-derivation unit tests
-pnpm typecheck    # config drift check + tsc across the workspace
+```bash
+pnpm test              # node --test, no runner, no build step
+pnpm typecheck
 ```
 
-## Command reference
+The test suite runs against the real migration files through a `node:sqlite`
+adapter, so the schema itself is under test — the CHECK constraints, the partial
+unique index on `domains`, and the FTS5 triggers all get exercised.
 
-| Command | What it does |
-|---|---|
-| `pnpm instance:new <name>` | provisions D1 + R2, writes `env.<name>`, sets the secrets, offers to wire up mail |
-| `pnpm instance:deploy <name>` | builds with the right origin, migrates, deploys (`--dry-run`, `--skip-migrations`) |
-| `pnpm instance:mail <name>` | enables Email Routing, points the catch-all at the worker, enables sending (`--dry-run`) |
-| `pnpm dev` / `pnpm dev:api` | SPA on :5173, worker on :8787 against a **local** D1 |
-| `pnpm dev:api:remote <name>` | worker against a real instance's remote D1/R2 |
-| `pnpm db:local` | apply migrations to the local D1 |
-| `pnpm check:config` | fail if `wrangler.jsonc` and `instances.jsonc` have drifted |
-| `pnpm generate-vapid` | print a VAPID private JWK for web push |
+---
 
-## Keyboard shortcuts
+## What's where
 
-`/` search · `g i/s/e/t/n` switch view · in a message: `r` reply, `e` archive,
-`s` star, `#` trash, `Esc` back. Swipe a row left to archive.
+```
+apps/api/src/
+  index.ts         Worker entry: HTTP, inbound email, cron
+  middleware.ts    setup gate → session gate → admin gate
+  routing.ts       which mailbox an address belongs to
+  users.ts         identity, password hashing, admin operations
+  auth.ts          session tokens
+  cloudflare.ts    the REST client that configures your mail
+  config/          instance config, credentials, per-domain policy
+  send/            provider-agnostic outbound (Resend, Cloudflare, none)
+  routes/          the HTTP surface
+apps/web/src/
+  components/setup/  the first-run wizard
+packages/shared/     the JSON contract between the two
+scripts/
+  provision.mjs      names your Cloudflare resources after your domain
+```
+
+## Deploying updates
+
+`pnpm run deploy` builds the SPA, applies pending D1 migrations, and deploys —
+migrations first, so new code never boots against an old schema.
+
+Note the `run`: `pnpm deploy` on its own is pnpm's own built-in command for
+deploying a workspace package, and it shadows this script.

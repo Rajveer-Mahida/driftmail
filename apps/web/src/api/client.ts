@@ -15,6 +15,8 @@ import type {
   RuleRow,
   DomainsResponse,
   DomainDnsRecord,
+  MeResponse,
+  SessionUser,
 } from "@email/shared";
 
 export class ApiError extends Error {
@@ -36,13 +38,19 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let msg = res.statusText;
+    let payload: unknown = null;
     try {
       const j = (await res.json()) as { error?: string };
+      payload = j;
       msg = j.error ?? msg;
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, msg);
+    const err = new ApiError(res.status, msg);
+    // Some failures carry structure worth branching on — mx_in_use returns the
+    // records that would be replaced, which the UI shows before confirming.
+    (err as ApiError & { body?: unknown }).body = payload;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -52,8 +60,11 @@ const body = (data: unknown) => ({ method: "POST", body: JSON.stringify(data) })
 
 export const api = {
   // auth
-  me: () => req<{ ok: true }>("/api/auth/me"),
-  login: (password: string) => req<{ ok: true }>("/api/auth/login", body({ password })),
+  me: () => req<MeResponse>("/api/auth/me"),
+  login: (email: string, password: string) =>
+    req<{ ok: true; user: SessionUser }>("/api/auth/login", body({ email, password })),
+  changePassword: (current: string, next: string) =>
+    req<{ ok: true }>("/api/auth/change-password", body({ current, next })),
   logout: () => req<{ ok: true }>("/api/auth/logout", { method: "POST" }),
 
   // reads
@@ -122,7 +133,7 @@ export const api = {
   setSettings: (data: {
     reply_enabled?: boolean;
     compose_enabled?: boolean;
-    primary_alias_domain?: string;
+    primary_domain?: string;
     signature?: string;
     block_remote_images?: boolean;
     allow_image_sender?: string;
@@ -150,17 +161,25 @@ export const api = {
   pushUnsubscribe: (endpoint: string) =>
     req<{ ok: true }>("/api/push/unsubscribe", body({ endpoint })),
 
-  // domains (only when CF_TOKEN is configured; 503 otherwise)
+  // domains (only once a Cloudflare token is stored; 503 otherwise)
   listDomains: () => req<DomainsResponse>("/api/domains"),
-  domainDns: (zoneId: string) =>
-    req<{ records: DomainDnsRecord[] }>(`/api/domains/${zoneId}/dns`),
-  connectDomain: (zoneId: string) =>
-    req<{ ok: true; worker: string; sending: boolean; records: DomainDnsRecord[] }>(
-      "/api/domains",
-      body({ zoneId }),
+  listZones: () =>
+    req<{ zones: Array<{ id: string; name: string; added: boolean; currentMx: string[]; managedDns: boolean }> }>(
+      "/api/domains/zones",
     ),
-  disconnectDomain: (zoneId: string) =>
-    req<{ ok: true }>(`/api/domains/${zoneId}`, { method: "DELETE" }),
+  addDomain: (data: { zoneId: string; domain: string; primary?: boolean; confirmOverwriteMx?: boolean }) =>
+    req<{ ok: true }>("/api/domains", body(data)),
+  domainStatus: (domain: string) =>
+    req<{ routing_state: string; catch_all_ok: boolean; records: DomainDnsRecord[] }>(
+      `/api/domains/${encodeURIComponent(domain)}/status`,
+    ),
+  makePrimaryDomain: (domain: string) =>
+    req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}/primary`, { method: "POST" }),
+  disconnectDomain: (domain: string) =>
+    req<{ ok: true; detached?: boolean; warning?: string }>(
+      `/api/domains/${encodeURIComponent(domain)}`,
+      { method: "DELETE" },
+    ),
 
   // rules
   listRules: () => req<RuleRow[]>("/api/rules"),
