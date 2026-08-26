@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { AdminUserRow, SettingsResponse } from "@email/shared";
+import type { AdminUserRow, DomainsResponse, SettingsResponse } from "@email/shared";
 import { Button, ConfirmDialog, Spinner } from "@/components/primitives";
 import { ApiError } from "@/api/client";
 
@@ -105,6 +105,27 @@ export function UsersPage() {
     queryFn: () =>
       req<PreviewResponse>(`/api/admin/routing/preview?address=${encodeURIComponent(preview)}`),
     enabled: preview.includes("@"),
+  });
+
+  const domainsQ = useQuery({
+    queryKey: ["admin", "domains"],
+    queryFn: () => req<DomainsResponse>("/api/domains"),
+  });
+
+  const setCatchall = useMutation({
+    mutationFn: (v: { domain: string; userId: string | null }) =>
+      req(`/api/admin/domains/${encodeURIComponent(v.domain)}/catchall`, {
+        method: "POST",
+        body: JSON.stringify({ userId: v.userId }),
+      }),
+    onSuccess: (_res, v) => {
+      toast.success(
+        v.userId ? `Catch-all set for ${v.domain}` : `Catch-all removed for ${v.domain}`,
+      );
+      void qc.invalidateQueries({ queryKey: ["admin", "domains"] });
+      void refresh();
+    },
+    onError: (err) => toast.error((err as Error).message),
   });
 
   if (settings.data && settings.data.user.role !== "admin") {
@@ -249,6 +270,41 @@ export function UsersPage() {
           </div>
         )}
       </section>
+
+      {(domainsQ.data?.domains.length ?? 0) > 0 && (
+        <section className="mb-8 rounded-2xl border border-border bg-surface/60 p-4">
+          <h2 className="mb-1 text-sm font-medium">Catch-all</h2>
+          <p className="mb-3 text-xs text-muted">
+            Mail that no alias or handle claims is delivered to this person, so{" "}
+            <span className="font-mono">anything@</span> on the domain reaches an inbox. With no
+            one set, unmatched mail bounces.
+          </p>
+          <div className="space-y-2">
+            {domainsQ.data?.domains.map((d) => (
+              <div key={d.domain} className="flex flex-wrap items-center gap-2">
+                <span className="w-48 truncate font-mono text-xs">{d.domain}</span>
+                <select
+                  value={d.catchall_user_id ?? ""}
+                  disabled={setCatchall.isPending}
+                  onChange={(e) =>
+                    setCatchall.mutate({ domain: d.domain, userId: e.target.value || null })
+                  }
+                  className={`${inputClass} max-w-72 flex-1`}
+                >
+                  <option value="">No one — unmatched mail bounces</option>
+                  {(users.data?.users ?? [])
+                    .filter((u) => !u.disabled)
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name ?? u.email} ({u.handle})
+                      </option>
+                    ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-border bg-surface/60 p-4">
         <h2 className="mb-1 text-sm font-medium">Where would mail go?</h2>
