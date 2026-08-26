@@ -8,6 +8,9 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    // Sources import each other with explicit .ts extensions so `node --test` can
+    // run against them directly, with no build step in front of the suite.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "esModuleInterop": true,
     "resolveJsonModule": true

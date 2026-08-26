@@ -15,6 +15,8 @@ import type {
   RuleRow,
   DomainsResponse,
   DomainDnsRecord,
+  MeResponse,
+  SessionUser,
 } from "@email/shared";
 
 export class ApiError extends Error {
@@ -52,8 +54,11 @@ const body = (data: unknown) => ({ method: "POST", body: JSON.stringify(data) })
 
 export const api = {
   // auth
-  me: () => req<{ ok: true }>("/api/auth/me"),
-  login: (password: string) => req<{ ok: true }>("/api/auth/login", body({ password })),
+  me: () => req<MeResponse>("/api/auth/me"),
+  login: (email: string, password: string) =>
+    req<{ ok: true; user: SessionUser }>("/api/auth/login", body({ email, password })),
+  changePassword: (current: string, next: string) =>
+    req<{ ok: true }>("/api/auth/change-password", body({ current, next })),
   logout: () => req<{ ok: true }>("/api/auth/logout", { method: "POST" }),
 
   // reads
@@ -122,7 +127,7 @@ export const api = {
   setSettings: (data: {
     reply_enabled?: boolean;
     compose_enabled?: boolean;
-    primary_alias_domain?: string;
+    primary_domain?: string;
     signature?: string;
     block_remote_images?: boolean;
     allow_image_sender?: string;
@@ -150,17 +155,14 @@ export const api = {
   pushUnsubscribe: (endpoint: string) =>
     req<{ ok: true }>("/api/push/unsubscribe", body({ endpoint })),
 
-  // domains (only when CF_TOKEN is configured; 503 otherwise)
+  // domains (only once a Cloudflare token is stored; 503 otherwise)
   listDomains: () => req<DomainsResponse>("/api/domains"),
-  domainDns: (zoneId: string) =>
-    req<{ records: DomainDnsRecord[] }>(`/api/domains/${zoneId}/dns`),
-  connectDomain: (zoneId: string) =>
-    req<{ ok: true; worker: string; sending: boolean; records: DomainDnsRecord[] }>(
-      "/api/domains",
-      body({ zoneId }),
+  domainStatus: (domain: string) =>
+    req<{ routing_state: string; catch_all_ok: boolean; records: DomainDnsRecord[] }>(
+      `/api/domains/${encodeURIComponent(domain)}/status`,
     ),
-  disconnectDomain: (zoneId: string) =>
-    req<{ ok: true }>(`/api/domains/${zoneId}`, { method: "DELETE" }),
+  disconnectDomain: (domain: string) =>
+    req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}`, { method: "DELETE" }),
 
   // rules
   listRules: () => req<RuleRow[]>("/api/rules"),

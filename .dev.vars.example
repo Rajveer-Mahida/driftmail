@@ -1,19 +1,26 @@
-# Local development secrets. Copy to .dev.vars (gitignored) at the repo root.
+# Nothing here is required in production.
 #
-# Both values below are REQUIRED — login fails closed without them. There is no
-# fallback signing key, so a missing AUTH_SECRET means no session can be issued.
+# Driftmail is configured in the browser at /setup — the wizard writes
+# everything into the database.
 #
-# Optional features take secrets too; add those after deploy so this stays minimal:
-#   wrangler secret put ANTHROPIC_API_KEY   # AI features (summarize, smart reply)
-#   wrangler secret put VAPID_PRIVATE_JWK   # web push — see pnpm generate-vapid
+# ── production (optional) ────────────────────────────────────────────────────
 #
-# For a deployed instance, set them per environment instead:
-#   wrangler secret put AUTH_SECRET -c instances.jsonc -e <name>
-
-# Password asked on the login screen. Pick something long and random.
-AUTH_PASSWORD=""
-
-# Random string used to sign the session cookie: `openssl rand -hex 32`.
-# Use a DIFFERENT value per instance — sessions carry no identity, so a shared
-# secret makes cookies interchangeable between deployments.
-AUTH_SECRET=""
+# SETUP_TOKEN     claim the instance with this instead of a Cloudflare API
+#                 token. Stores no token, so Domains and DNS stay unavailable.
+# CONFIG_ENC_KEY  wraps stored credentials at rest under a key that does not
+#                 live in the database.
+#
+# SETUP_TOKEN=
+# CONFIG_ENC_KEY=
+#
+# ── local development ────────────────────────────────────────────────────────
+#
+# The claim proves ownership by checking that your token's Cloudflare account
+# runs the Worker serving the request. No Worker serves localhost, so that check
+# cannot pass locally. Set this to skip it and paste a real token, which is what
+# makes the domain and DNS steps usable while developing.
+#
+# NEVER set this on a deployed Worker. A loopback hostname is also required, but
+# the Host header is client-controlled — this variable is the real gate.
+#
+# DEV_UNSAFE_SKIP_OWNERSHIP=1

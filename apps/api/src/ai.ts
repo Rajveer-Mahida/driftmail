@@ -1,10 +1,15 @@
 // Claude (Messages API) helpers — raw fetch, no SDK dependency.
 
-import type { Env } from "./env";
-import type { MessageRow } from "@email/shared";
-import { getThread } from "./db";
+import type { Env } from "./env.ts";
+import type { MessageRow, UserId } from "@email/shared";
+import { getThread } from "./db.ts";
+import { getConfig } from "./config/index.ts";
+import { getSecret, hasSecret, reveal } from "./config/secrets.ts";
 
-const DEFAULT_MODEL = "claude-haiku-4-5";
+/** Whether the AI features are usable at all. The SPA hides them when not. */
+export async function aiConfigured(env: Env): Promise<boolean> {
+  return hasSecret(env.DB, "anthropic.api_key");
+}
 
 type ClaudeResponse = {
   stop_reason?: string;
@@ -17,10 +22,11 @@ export async function callClaude(
   env: Env,
   opts: { system: string; user: string; maxTokens: number; schema?: object },
 ): Promise<string> {
-  if (!env.ANTHROPIC_API_KEY) throw new Error("AI_NOT_CONFIGURED");
+  const key = await getSecret(env.DB, env, "anthropic.api_key");
+  if (!key) throw new Error("AI_NOT_CONFIGURED");
 
   const body: Record<string, unknown> = {
-    model: env.AI_MODEL || DEFAULT_MODEL,
+    model: await getConfig(env.DB, "ai.model"),
     max_tokens: opts.maxTokens,
     system: opts.system,
     messages: [{ role: "user", content: opts.user }],
@@ -32,7 +38,7 @@ export async function callClaude(
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
-      "x-api-key": env.ANTHROPIC_API_KEY,
+      "x-api-key": reveal(key),
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },
@@ -52,9 +58,13 @@ export async function callClaude(
 }
 
 /** Build a bounded plain-text rendering of a thread for the model. */
-export async function threadText(db: D1Database, message: MessageRow): Promise<string> {
+export async function threadText(
+  db: D1Database,
+  userId: UserId,
+  message: MessageRow,
+): Promise<string> {
   const threadKey = message.thread_id ?? message.message_id ?? message.id;
-  const thread = await getThread(db, threadKey);
+  const thread = await getThread(db, userId, threadKey);
   const msgs = thread.length ? thread : [message];
 
   const parts: string[] = [];

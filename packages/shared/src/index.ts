@@ -3,7 +3,70 @@
 
 export type Direction = "in" | "out";
 
-export type SendState = "pending" | "sending" | "sent" | "cancelled" | null;
+// ── users ────────────────────────────────────────────────────────────────────
+
+export type UserRole = "admin" | "user";
+
+/**
+ * A user id, branded so it cannot be confused with any other string.
+ *
+ * Every scoped database function takes this type. Row fields such as
+ * `MessageRow.user_id` stay a plain `string`, which makes
+ * `getThread(db, row.user_id, ...)` a compile error on purpose: identity must
+ * come from the session or the address resolver, never from a row that was
+ * itself fetched without a scope.
+ */
+export type UserId = string & { readonly __userId: unique symbol };
+
+/** The three places a UserId legitimately originates. Anywhere else, don't. */
+export const asUserId = (id: string): UserId => id as UserId;
+
+/** Everything about a user that is safe to show to anyone signed in. Password
+ *  material is deliberately absent from the type, not merely omitted in code. */
+export type PublicUser = {
+  id: string;
+  email: string;
+  /** Routing handle. Mail to <handle>@, <handle>.tag@, tag-<handle>@ and so on
+   *  reaches this mailbox — see the resolver in apps/api/src/routing.ts. */
+  handle: string;
+  name: string | null;
+  role: UserRole;
+  disabled: number;
+  created_at: number;
+  last_login_at: number | null;
+};
+
+export type SessionUser = PublicUser & { must_change_pw: boolean };
+
+export type MeResponse = { user: SessionUser };
+export type LoginRequest = { email: string; password: string };
+
+export type AdminUserRow = PublicUser & {
+  alias_count: number;
+  message_count: number;
+  catchall_domains: string[];
+};
+
+export type CreateUserRequest = {
+  email: string;
+  handle: string;
+  name?: string;
+  role?: UserRole;
+};
+
+/** The temp password is shown exactly once, at creation. An emailed invite link
+ *  is the one flow guaranteed to be broken on day one, because outbound sending
+ *  may not be verified yet when the second user is created. */
+export type CreateUserResponse = { user: PublicUser; temp_password: string };
+
+export type SendState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "cancelled"
+  /** The provider rejected it in a way retrying cannot fix; see `send_error`. */
+  | "failed"
+  | null;
 
 export type MessageRow = {
   id: string;
@@ -30,6 +93,7 @@ export type MessageRow = {
   snooze_until: number | null;
   send_after: number | null;
   send_state: SendState;
+  send_error: string | null;
 };
 
 export type AttachmentRow = {
@@ -96,27 +160,38 @@ export type MessageHeaderDetails = {
 };
 
 export type SettingsResponse = {
+  /** Instance-wide kill switches; only an admin can change these. */
   reply_enabled: boolean;
   compose_enabled: boolean;
-  primary_alias_domain: string;
-  alias_domains: string[];
-  alias_suffix: string;
+  /** Per-user preferences. */
+  primary_domain: string;
   signature: string;
   block_remote_images: boolean;
   image_allowlist: string[];
-  /** Whether CF_TOKEN is configured — the SPA hides the Domains section when
-   *  it isn't, since every /api/domains route returns 503. */
+  /** Mail domains this instance handles. */
+  domains: string[];
+  /** Whether a Cloudflare token is stored — the SPA hides the Domains section
+   *  when it isn't, since every /api/domains route returns 503. */
   domain_management: boolean;
+  user: SessionUser;
 };
 
-export type ZoneRow = {
-  id: string;
-  name: string;
-  status: string;
-  routing: { enabled: boolean; status?: string };
+/** A mail domain this instance handles, as stored. */
+export type DomainRow = {
+  domain: string;
+  zone_id: string | null;
+  is_primary: number;
+  routing_state: "none" | "enabling" | "pending_dns" | "ready" | "error";
+  routing_error: string | null;
+  accept_all: number;
+  alias_suffix: string | null;
+  catchall_user_id: string | null;
+  send_provider: "resend" | "cloudflare" | "none" | null;
+  send_state: "none" | "pending_dns" | "verifying" | "verified" | "failed";
+  send_error: string | null;
 };
 
-export type DomainsResponse = { worker: string; zones: ZoneRow[] };
+export type DomainsResponse = { worker: string; domains: DomainRow[] };
 
 export type DomainDnsRecord = {
   type: string;

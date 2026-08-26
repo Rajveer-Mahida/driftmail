@@ -1,43 +1,34 @@
 import { Hono } from "hono";
-import { getCookie } from "hono/cookie";
-import type { HonoEnv, Env } from "./env";
-import { verifySessionToken, cookieName } from "./auth";
-import { handleEmail } from "./email-handler";
-import { runScheduled } from "./scheduled";
-import { auth } from "./routes/auth";
-import { messages } from "./routes/messages";
-import { labels, counts } from "./routes/labels";
-import { settings } from "./routes/settings";
-import { reply } from "./routes/reply";
-import { attachments } from "./routes/attachments";
-import { compose } from "./routes/compose";
-import { uploads } from "./routes/uploads";
-import { drafts } from "./routes/drafts";
-import { aliases } from "./routes/aliases";
-import { rules } from "./routes/rules";
-import { push } from "./routes/push";
-import { ai } from "./routes/ai";
-import { domains } from "./routes/domains";
+import type { HonoEnv, Env } from "./env.ts";
+import { setupGate, sessionGate } from "./middleware.ts";
+import { handleEmail } from "./email-handler.ts";
+import { runScheduled } from "./scheduled.ts";
+import { auth } from "./routes/auth.ts";
+import { messages } from "./routes/messages.ts";
+import { labels, counts } from "./routes/labels.ts";
+import { settings } from "./routes/settings.ts";
+import { reply } from "./routes/reply.ts";
+import { attachments } from "./routes/attachments.ts";
+import { compose } from "./routes/compose.ts";
+import { uploads } from "./routes/uploads.ts";
+import { drafts } from "./routes/drafts.ts";
+import { aliases } from "./routes/aliases.ts";
+import { rules } from "./routes/rules.ts";
+import { push } from "./routes/push.ts";
+import { ai } from "./routes/ai.ts";
+import { domains } from "./routes/domains.ts";
+import { setup } from "./routes/setup.ts";
+import { admin } from "./routes/admin.ts";
+import { sending } from "./routes/sending.ts";
 
 const app = new Hono<HonoEnv>();
 
-// Auth gate: everything under /api except the login endpoint requires a valid session.
-const PUBLIC_PATHS = new Set(["/api/auth/login", "/api/health"]);
+// Order matters: an unclaimed instance must refuse before anything tries to
+// resolve a session against a signing key that does not exist yet.
+app.use("/api/*", setupGate());
+app.use("/api/*", sessionGate());
 
-app.use("/api/*", async (c, next) => {
-  if (PUBLIC_PATHS.has(c.req.path)) return next();
-
-  const token = getCookie(c, cookieName());
-  if (token) {
-    try {
-      if (await verifySessionToken(c.env, token)) return next();
-    } catch {
-      // fall through to 401
-    }
-  }
-  return c.json({ error: "unauthorized" }, 401);
-});
-
+app.route("/api/setup", setup);
 app.route("/api/auth", auth);
 app.route("/api/messages", messages);
 app.route("/api/labels", labels);
@@ -52,6 +43,8 @@ app.route("/api/rules", rules);
 app.route("/api/push", push);
 app.route("/api/ai", ai);
 app.route("/api/domains", domains);
+app.route("/api/admin", admin);
+app.route("/api/sending", sending);
 app.route("/api/attachments", attachments);
 
 app.get("/api/health", (c) => c.json({ ok: true }));

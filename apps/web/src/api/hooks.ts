@@ -345,24 +345,16 @@ export function useSetSettings() {
   });
 }
 
-// ── domains (only meaningful when CF_TOKEN is set) ───────────────────────────
+// ── domains (only meaningful once a Cloudflare token is stored) ──────────────
 
 export function useDomains(enabled: boolean) {
   return useQuery({ queryKey: ["domains"], queryFn: api.listDomains, enabled });
 }
 
-export function useConnectDomain() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (zoneId: string) => api.connectDomain(zoneId),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["domains"] }),
-  });
-}
-
 export function useDisconnectDomain() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (zoneId: string) => api.disconnectDomain(zoneId),
+    mutationFn: (domain: string) => api.disconnectDomain(domain),
     onSettled: () => qc.invalidateQueries({ queryKey: ["domains"] }),
   });
 }

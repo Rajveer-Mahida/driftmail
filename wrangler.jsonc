@@ -1,29 +1,31 @@
 {
-  // ─────────────────────────────────────────────────────────────────────────
-  // Structural config + one-click "Deploy to Cloudflare" defaults.
+  // One-click "Deploy to Cloudflare" config.
   //
-  // This file is the config for the deploy button (deploy.workers.cloudflare.com),
-  // which clones the repo, provisions the D1/R2 resources below under YOUR
-  // Cloudflare account (rewriting names/ids), prompts for the vars, then runs the
-  // root package.json `build` + `deploy` scripts. It deploys to
-  // driftmail.<your-subdomain>.workers.dev.
+  // The deploy flow clones this repo, provisions the D1 database and R2 bucket
+  // below under YOUR account (rewriting their names and ids), then runs the root
+  // package.json `build` and `deploy` scripts.
   //
-  // Deployments on your OWN domains live in `instances.jsonc` (gitignored) as
-  // wrangler environments — see instances.example.jsonc, then `pnpm instance:new <name>`.
-  // The structural block below (main / assets / compat / triggers / observability)
-  // is mirrored there; `pnpm check:config` fails the build if the two drift.
-  // ─────────────────────────────────────────────────────────────────────────
+  // Deploying by hand? Use `pnpm run deploy` — plain `pnpm deploy` is pnpm's own
+  // built-in command and shadows the script.
+  //
+  // Everything else is configured in the browser at /setup — there is nothing to
+  // type into the deploy form, and no `wrangler secret put` to run afterwards.
+  //
+  // The resource names below are the generic defaults. A D1 database can never
+  // be renamed once created, so if you're deploying from a clone, run
+  // `pnpm provision <your-domain>` FIRST — it creates them named after your
+  // domain and rewrites the names and ids here. Deploying from the button
+  // instead? Rename them in the deploy form; you can't change them later.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "driftmail",
+  "name": "rajveerz-qzz-io-driftmail",
   "main": "apps/api/src/index.ts",
   "compatibility_date": "2026-05-12",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": { "enabled": true },
   "upload_source_maps": true,
 
-  // Single worker serves everything on one hostname:
-  //   /api/*  → the Hono worker (run_worker_first)
-  //   /*      → the built SPA static assets, with SPA fallback for client routes
+  // The SPA and the API are one Worker on one hostname. run_worker_first keeps
+  // /api/* away from the static asset handler.
   "assets": {
     "directory": "apps/web/dist",
     "binding": "ASSETS",
@@ -31,49 +33,34 @@
     "run_worker_first": ["/api/*"]
   },
 
-  // The deploy flow provisions a fresh D1 database and R2 bucket and rewrites
-  // the ids/names below. Migrations run from the root `deploy` script.
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "driftmail-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "rajveerz-qzz-io-driftmail",
+      "database_id": "c38472e3-223a-484b-bf73-1899bbcdc054",
       "migrations_dir": "apps/api/migrations"
     }
   ],
-  "r2_buckets": [
-    {
-      "binding": "EMAIL_CACHE",
-      "bucket_name": "driftmail-email-cache"
-    }
-  ],
+  "r2_buckets": [{ "binding": "EMAIL_CACHE", "bucket_name": "rajveerz-qzz-io-driftmail-mail" }],
+
+  // Outbound, when Cloudflare is chosen as the sending provider in the wizard.
+  // Unrestricted, so the choice can change without a redeploy; the app enforces
+  // its own from-address policy in apps/api/src/send.
   "send_email": [{ "name": "EMAIL" }],
 
-  // Undo-send / scheduled-send cron.
-  "triggers": { "crons": ["* * * * *"] },
+  // Undo-send and scheduled send.
+  "triggers": { "crons": ["* * * * *"] }
 
-  // Every var declared here becomes a REQUIRED field in the deploy button's
-  // form — Cloudflare has no notion of an optional var — so only genuinely
-  // required config lives here. The optional vars below are read by the worker
-  // with sensible defaults and can be added afterwards under
+  // No "vars" block, deliberately: every var declared here becomes a field in
+  // the deploy button's form, and all configuration now lives in D1.
+  //
+  // No required secrets either. Two OPTIONAL ones can be added afterwards under
   // Worker → Settings → Variables and Secrets:
   //
-  //   ALLOWED_EMAILS       which addresses to accept; empty = all of them
-  //   ALIAS_SUFFIX         shape of generated aliases; empty = <name>@<domain>
-  //   REPLY_FROM           defaults to reply@<first ALIAS_DOMAINS entry>
-  //   FORWARD_TO           also forward accepted mail to a verified address
-  //   FALLBACK_FORWARD_TO  where rejected mail goes; empty = reject
-  //   VAPID_SUBJECT        mailto: contact for web push; empty = push off
-  //   AI_MODEL             overrides the default Claude model
-  "vars": {
-    // Comma-separated domain(s) you receive mail on via Cloudflare Email
-    // Routing, e.g. "example.com" or "example.com,example.org". Entries may be
-    // globs: "*" accepts any domain Email Routing sends here, which is the
-    // easy choice when you haven't picked the domain yet.
-    "ALIAS_DOMAINS": "*"
-  }
-  // Secrets (see .dev.vars.example): AUTH_PASSWORD + AUTH_SECRET are both
-  // REQUIRED — login fails closed without them. Optional: ANTHROPIC_API_KEY
-  // (AI features), VAPID_PRIVATE_JWK (web push), AI_MODEL (override the
-  // default Claude model).
+  //   SETUP_TOKEN     accepted by /api/setup/claim instead of a Cloudflare API
+  //                   token, for operators who would rather not give this app a
+  //                   DNS-capable token.
+  //   CONFIG_ENC_KEY  wraps stored credentials at rest. Worth setting only
+  //                   because it lives OUTSIDE the database — see the trust
+  //                   boundary note in apps/api/src/config/secrets.ts.
 }

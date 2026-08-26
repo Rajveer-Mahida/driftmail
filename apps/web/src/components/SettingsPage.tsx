@@ -8,7 +8,6 @@ import {
   useSettings,
   useSetSettings,
   useDomains,
-  useConnectDomain,
   useDisconnectDomain,
 } from "@/api/hooks";
 import { useUI } from "@/lib/store";
@@ -118,14 +117,14 @@ export function SettingsPage() {
             stack
           >
             <div className="mt-3 flex flex-wrap gap-2">
-              {s?.alias_domains.map((d) => {
-                const active = s.primary_alias_domain === d;
+              {s?.domains.map((d: string) => {
+                const active = s.primary_domain === d;
                 return (
                   <button
                     key={d}
                     onClick={() =>
                       save.mutate(
-                        { primary_alias_domain: d },
+                        { primary_domain: d },
                         { onSuccess: () => toast.success(`Primary domain: ${d}`) },
                       )
                     }
@@ -291,20 +290,28 @@ function Section({
 }
 
 /**
- * Connect a domain's mail to this worker, without leaving the app.
+ * The mail domains this instance handles.
  *
- * Only rendered when the worker has a CF_TOKEN — every /api/domains route
- * returns 503 otherwise. Connecting enables Email Routing (which writes the MX
- * and SPF records) and points the zone's catch-all here.
+ * Only rendered once a Cloudflare API token is stored — every /api/domains
+ * route returns 503 otherwise. Adding a domain happens in the setup wizard,
+ * which has the room to explain what enabling Email Routing does to the zone's
+ * existing MX records; this is the after-the-fact view.
  */
 function DomainsSection() {
   const domains = useDomains(true);
-  const connect = useConnectDomain();
   const disconnect = useDisconnectDomain();
   const [busy, setBusy] = useState<string | null>(null);
 
-  const zones = domains.data?.zones ?? [];
+  const rows = domains.data?.domains ?? [];
   const worker = domains.data?.worker;
+
+  const STATE_LABEL: Record<string, string> = {
+    ready: "receiving mail",
+    pending_dns: "waiting for DNS",
+    enabling: "enabling…",
+    error: "needs attention",
+    none: "not routing yet",
+  };
 
   return (
     <Section
@@ -312,82 +319,70 @@ function DomainsSection() {
       title="Domains"
       desc={
         worker
-          ? `Route a domain's mail to this worker (${worker}).`
-          : "Route a domain's mail to this worker."
+          ? `Mail for these domains arrives at this worker (${worker}).`
+          : "Mail domains handled by this instance."
       }
       stack
     >
       <div className="mt-3 space-y-2">
         {domains.isPending && (
           <div className="flex items-center gap-2 text-sm text-muted">
-            <Spinner className="text-accent" /> Loading your zones…
+            <Spinner className="text-accent" /> Loading…
           </div>
         )}
 
         {domains.isError && (
           <p className="text-sm text-muted">
             {(domains.error as Error).message ||
-              "Couldn't reach Cloudflare — check the CF_TOKEN scopes."}
+              "Couldn't reach Cloudflare — check the token's scopes."}
           </p>
         )}
 
-        {domains.isSuccess && zones.length === 0 && (
+        {domains.isSuccess && rows.length === 0 && (
           <p className="text-sm text-muted">
-            No zones visible to this token. It needs Zone:Read for the domains you want.
+            No domains yet, so nothing can arrive. Add one to start receiving mail.
           </p>
         )}
 
-        {zones.map((z) => (
+        {rows.map((d) => (
           <div
-            key={z.id}
+            key={d.domain}
             className="flex items-center gap-3 rounded-xl border border-border bg-bg px-4 py-3"
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate font-mono text-sm">{z.name}</p>
+              <p className="truncate font-mono text-sm">
+                {d.domain}
+                {d.is_primary === 1 && (
+                  <span className="ml-2 rounded-full bg-accent/10 px-2 py-0.5 text-xs text-accent">
+                    primary
+                  </span>
+                )}
+              </p>
               <p className="text-xs text-muted">
-                {z.routing.enabled ? "Email Routing enabled" : "Email Routing not enabled"}
+                {STATE_LABEL[d.routing_state] ?? d.routing_state}
+                {d.send_state === "verified" && " · sending verified"}
+                {d.routing_error && ` · ${d.routing_error}`}
               </p>
             </div>
-            {z.routing.enabled ? (
-              <Button
-                disabled={busy === z.id}
-                onClick={() => {
-                  setBusy(z.id);
-                  disconnect.mutate(z.id, {
-                    onSuccess: () => toast.success(`Email Routing disabled for ${z.name}`),
-                    onError: (e) => toast.error((e as Error).message),
-                    onSettled: () => setBusy(null),
-                  });
-                }}
-              >
-                {busy === z.id ? "Working…" : "Disconnect"}
-              </Button>
-            ) : (
-              <Button
-                variant="primary"
-                disabled={busy === z.id}
-                onClick={() => {
-                  setBusy(z.id);
-                  connect.mutate(z.id, {
-                    onSuccess: (r) =>
-                      toast.success(`${z.name} now routes here`, {
-                        description: r.sending
-                          ? "MX and SPF records added; sending enabled."
-                          : "MX and SPF records added. Enable Email Sending to send replies.",
-                      }),
-                    onError: (e) => toast.error((e as Error).message),
-                    onSettled: () => setBusy(null),
-                  });
-                }}
-              >
-                {busy === z.id ? "Connecting…" : "Connect"}
-              </Button>
-            )}
+            <Button
+              disabled={busy === d.domain}
+              onClick={() => {
+                setBusy(d.domain);
+                disconnect.mutate(d.domain, {
+                  onSuccess: () => toast.success(`${d.domain} no longer routes here`),
+                  onError: (e) => toast.error((e as Error).message),
+                  onSettled: () => setBusy(null),
+                });
+              }}
+            >
+              {busy === d.domain ? "Working…" : "Remove"}
+            </Button>
           </div>
         ))}
 
         <p className="pt-1 text-xs text-faint">
-          Connecting writes MX and SPF records to the zone and sends all of its mail here.
+          Removing a domain turns off its Email Routing and stops mail arriving. Messages already
+          received are kept.
         </p>
       </div>
     </Section>

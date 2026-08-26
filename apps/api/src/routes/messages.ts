@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import PostalMime from "postal-mime";
 import type { Context } from "hono";
-import type { HonoEnv } from "../env";
+import type { HonoEnv } from "../env.ts";
 import type {
   MessageListItem,
   MessageDetail,
@@ -24,11 +24,11 @@ import {
   applyLabels,
   removeLabel,
   cancelPendingMessage,
-  claimPendingMessage,
-  markMessageSent,
-} from "../db";
-import { replyFrom } from "../settings";
-import { mailedBy, signedBy, replyToOf } from "../headers";
+} from "../db.ts";
+import { flushPending } from "../send/outbox.ts";
+import { SendError } from "../send/types.ts";
+import { mailedBy, signedBy, replyToOf } from "../headers.ts";
+import { scopeOf } from "../middleware.ts";
 
 const FLAG_FIELDS: FlagField[] = ["is_starred", "is_archived", "is_deleted", "is_read"];
 
@@ -37,6 +37,7 @@ export const messages = new Hono<HonoEnv>();
 // GET /api/messages?view=&q=&label=&limit=&offset=
 messages.get("/", async (c) => {
   const db = c.env.DB;
+  const uid = scopeOf(c);
   const view = (c.req.query("view") as ViewName) || "inbox";
   const q = c.req.query("q") ?? undefined;
   const labelId = c.req.query("label") ?? undefined;
@@ -44,8 +45,8 @@ messages.get("/", async (c) => {
   const limit = Number(c.req.query("limit") ?? "50");
   const offset = Number(c.req.query("offset") ?? "0");
 
-  const rows = await listMessages(db, { view, q, labelId, to, limit, offset });
-  const labelMap = await labelsForMessages(db, rows.map((m) => m.id));
+  const rows = await listMessages(db, uid, { view, q, labelId, to, limit, offset });
+  const labelMap = await labelsForMessages(db, uid, rows.map((m) => m.id));
 
   const items: MessageListItem[] = rows.map(({ html: _h, text: _t, ...rest }) => ({
     ...rest,
@@ -57,17 +58,18 @@ messages.get("/", async (c) => {
 // GET /api/messages/:id  → message + thread + attachments + labels
 messages.get("/:id", async (c) => {
   const db = c.env.DB;
+  const uid = scopeOf(c);
   const id = c.req.param("id");
-  const message = await getMessage(db, id);
+  const message = await getMessage(db, uid, id);
   if (!message) return c.json({ error: "not found" }, 404);
 
   const threadKey = message.thread_id ?? message.message_id ?? message.id;
-  const thread = await getThread(db, threadKey);
+  const thread = await getThread(db, uid, threadKey);
   const messages = thread.length ? thread : [message];
 
   const [attachments, labelMap] = await Promise.all([
-    attachmentsForMessages(db, messages.map((m) => m.id)),
-    labelsForMessages(db, [id]),
+    attachmentsForMessages(db, uid, messages.map((m) => m.id)),
+    labelsForMessages(db, uid, [id]),
   ]);
 
   const detail: MessageDetail = {
@@ -94,7 +96,7 @@ function parseUnsub(value: string): { http: string | null; mailto: string | null
 }
 
 async function unsubInfo(c: Context<HonoEnv>, id: string) {
-  const msg = await getMessage(c.env.DB, id);
+  const msg = await getMessage(c.env.DB, scopeOf(c), id);
   if (!msg?.raw_key) return null;
   const obj = await c.env.EMAIL_CACHE.get(msg.raw_key);
   if (!obj) return null;
@@ -112,7 +114,7 @@ async function unsubInfo(c: Context<HonoEnv>, id: string) {
 // an R2 read plus a full MIME parse.
 messages.get("/:id/details", async (c) => {
   const empty = { mailedBy: null, signedBy: null, replyTo: null };
-  const msg = await getMessage(c.env.DB, c.req.param("id"));
+  const msg = await getMessage(c.env.DB, scopeOf(c), c.req.param("id"));
   if (!msg?.raw_key) return c.json(empty);
   const obj = await c.env.EMAIL_CACHE.get(msg.raw_key);
   if (!obj) return c.json(empty);
@@ -156,14 +158,14 @@ messages.post("/mark-read", async (c) => {
     .json<{ id?: string; read?: boolean }>()
     .catch(() => ({}) as { id?: string; read?: boolean });
   if (!id) return c.json({ error: "id required" }, 400);
-  await markRead(c.env.DB, id, read !== false);
+  await markRead(c.env.DB, scopeOf(c), id, read !== false);
   return c.json({ ok: true });
 });
 
 messages.post("/delete", async (c) => {
   const { id } = await c.req.json<{ id?: string }>().catch(() => ({}) as { id?: string });
   if (!id) return c.json({ error: "id required" }, 400);
-  await softDelete(c.env.DB, id);
+  await softDelete(c.env.DB, scopeOf(c), id);
   return c.json({ ok: true });
 });
 
@@ -174,7 +176,7 @@ messages.post("/flag", async (c) => {
   if (!ids?.length || !field || !FLAG_FIELDS.includes(field as FlagField) || value === undefined) {
     return c.json({ error: "invalid params" }, 400);
   }
-  await setFlag(c.env.DB, ids, field as FlagField, value);
+  await setFlag(c.env.DB, scopeOf(c), ids, field as FlagField, value);
   return c.json({ ok: true });
 });
 
@@ -185,7 +187,7 @@ messages.post("/snooze", async (c) => {
   if (!ids?.length || until === undefined) {
     return c.json({ error: "ids and until required" }, 400);
   }
-  await setSnooze(c.env.DB, ids, until);
+  await setSnooze(c.env.DB, scopeOf(c), ids, until);
   return c.json({ ok: true });
 });
 
@@ -193,14 +195,14 @@ messages.post("/mark-all-read", async (c) => {
   const { view, labelId } = await c.req
     .json<{ view?: string; labelId?: string }>()
     .catch(() => ({}) as Record<string, never>);
-  await markAllRead(c.env.DB, { view: (view as ViewName) || "inbox", labelId });
+  await markAllRead(c.env.DB, scopeOf(c), { view: (view as ViewName) || "inbox", labelId });
   return c.json({ ok: true });
 });
 
 messages.post("/permanent-delete", async (c) => {
   const { ids } = await c.req.json<{ ids?: string[] }>().catch(() => ({}) as { ids?: string[] });
   if (!ids?.length) return c.json({ error: "ids required" }, 400);
-  await permanentDeleteMessages(c.env.DB, ids);
+  await permanentDeleteMessages(c.env.DB, scopeOf(c), ids);
   return c.json({ ok: true });
 });
 
@@ -211,7 +213,7 @@ messages.post("/labels", async (c) => {
   if (!messageIds?.length || !labelIds?.length) {
     return c.json({ error: "messageIds and labelIds required" }, 400);
   }
-  await applyLabels(c.env.DB, messageIds, labelIds);
+  await applyLabels(c.env.DB, scopeOf(c), messageIds, labelIds);
   return c.json({ ok: true });
 });
 
@@ -220,7 +222,7 @@ messages.delete("/labels", async (c) => {
     .json<{ messageId?: string; labelId?: string }>()
     .catch(() => ({}) as Record<string, never>);
   if (!messageId || !labelId) return c.json({ error: "messageId and labelId required" }, 400);
-  await removeLabel(c.env.DB, messageId, labelId);
+  await removeLabel(c.env.DB, scopeOf(c), messageId, labelId);
   return c.json({ ok: true });
 });
 
@@ -235,51 +237,19 @@ messages.post("/send-now", async (c) => {
   const { id } = await c.req.json<{ id?: string }>().catch(() => ({}) as { id?: string });
   if (!id) return c.json({ error: "id required" }, 400);
 
-  const claimed = await claimPendingMessage(c.env.DB, id);
-  if (!claimed) return c.json({ ok: true, skipped: true });
-
-  const msg = await getMessage(c.env.DB, id);
-  if (!msg) return c.json({ error: "not found" }, 404);
-
   // No gate here: the pending row was already authorized at creation
-  // (reply → reply_enabled, compose → compose_enabled). This is just the flush.
-
-  const splitAddrs = (s: string | null) =>
-    (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
-
+  // (reply -> reply_enabled, compose -> compose_enabled). This is just the flush.
   try {
-    // Pull stored attachment blobs back from R2 so compose attachments deliver.
-    const atts = await getAttachments(c.env.DB, id);
-    const attachments = [];
-    for (const a of atts) {
-      const obj = await c.env.EMAIL_CACHE.get(a.r2_key);
-      if (!obj) continue;
-      attachments.push({
-        content: await obj.arrayBuffer(),
-        filename: a.filename ?? "file",
-        type: a.mime_type ?? "application/octet-stream",
-        disposition: "attachment" as const,
-      });
-    }
-    const cc = splitAddrs(msg.cc);
-    const bcc = splitAddrs(msg.bcc);
-
-    await c.env.EMAIL.send({
-      to: splitAddrs(msg.to_addr),
-      cc: cc.length ? cc : undefined,
-      bcc: bcc.length ? bcc : undefined,
-      from: msg.from_addr || replyFrom(c.env),
-      subject: msg.subject ?? "(no subject)",
-      html: msg.html ?? undefined,
-      text: msg.text ?? "",
-      attachments: attachments.length ? attachments : undefined,
-    });
-    await markMessageSent(c.env.DB, id);
+    await flushPending(c.env, id);
     return c.json({ ok: true });
   } catch (err) {
+    // A cron tick may have claimed it a moment ago; that is a race, not a
+    // failure, and the message still goes out.
+    if (err instanceof SendError && err.code === "already_sending") {
+      return c.json({ ok: true, skipped: true });
+    }
     console.error("send-now failed", err);
-    // Revert the claim so the row isn't stuck in 'sending' forever.
-    await c.env.DB.prepare(`UPDATE messages SET send_state='pending' WHERE id = ?`).bind(id).run();
+    if (err instanceof SendError) return c.json(err.toJSON(), 502);
     return c.json({ error: (err as Error)?.message ?? "send failed" }, 500);
   }
 });

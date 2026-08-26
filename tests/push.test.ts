@@ -21,22 +21,22 @@ async function keyPair() {
 test("derives the same public key the raw export produces", async () => {
   for (let i = 0; i < 20; i++) {
     const { jwk, raw } = await keyPair();
-    assert.equal(vapidPublicKey({ VAPID_PRIVATE_JWK: jwk } as never), raw);
+    assert.equal(vapidPublicKey(jwk), raw);
   }
 });
 
 test("derived key is a 65-byte uncompressed EC point", async () => {
   const { jwk } = await keyPair();
-  const key = vapidPublicKey({ VAPID_PRIVATE_JWK: jwk } as never)!;
+  const key = vapidPublicKey(jwk)!;
   const bytes = Buffer.from(key.replace(/-/g, "+").replace(/_/g, "/"), "base64");
   assert.equal(bytes.length, 65);
   assert.equal(bytes[0], 0x04);
 });
 
 test("returns null instead of throwing on unusable input", () => {
-  assert.equal(vapidPublicKey({} as never), null);
-  assert.equal(vapidPublicKey({ VAPID_PRIVATE_JWK: "" } as never), null);
-  assert.equal(vapidPublicKey({ VAPID_PRIVATE_JWK: "not json" } as never), null);
-  assert.equal(vapidPublicKey({ VAPID_PRIVATE_JWK: '{"kty":"EC"}' } as never), null);
-  assert.equal(vapidPublicKey({ VAPID_PRIVATE_JWK: '{"x":"AA","y":"AA"}' } as never), null);
+  assert.equal(vapidPublicKey(null), null);
+  assert.equal(vapidPublicKey(""), null);
+  assert.equal(vapidPublicKey("not json"), null);
+  assert.equal(vapidPublicKey('{"kty":"EC"}'), null);
+  assert.equal(vapidPublicKey('{"x":"AA","y":"AA"}'), null);
 });

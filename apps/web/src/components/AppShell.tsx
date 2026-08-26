@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { api, ApiError } from "@/api/client";
 import { AnimatePresence } from "framer-motion";
 import { Sidebar } from "@/components/Sidebar";
+import { ChangePasswordGate } from "@/components/ChangePasswordGate";
 import { Compose } from "@/components/Compose";
 import { CommandPalette } from "@/components/CommandPalette";
 import { KeyboardHelp } from "@/components/KeyboardHelp";
@@ -33,7 +34,7 @@ export function AppShell() {
     "?": () => setHelp(true),
   });
 
-  const { isLoading, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["auth", "me"],
     queryFn: api.me,
     retry: false,
@@ -41,6 +42,14 @@ export function AppShell() {
   });
 
   const unauthorized = error instanceof ApiError && error.status === 401;
+  // Someone signing in with a temporary password gets nothing but the change
+  // form, because leaving that account usable is how a handover becomes a
+  // permanent shared credential.
+  const mustChangePassword =
+    data?.user.must_change_pw ||
+    (error instanceof ApiError && error.status === 403 && error.message === "password_change_required");
+
+  if (mustChangePassword) return <ChangePasswordGate />;
 
   if (isLoading) {
     return (
@@ -63,6 +72,7 @@ export function AppShell() {
     // an effect + `return null` used to leave a permanently blank page whenever
     // the navigation didn't take, which is the worst possible failure here.
     if (unauthorized) return <Navigate to="/login" replace />;
+    if (mustChangePassword) return <ChangePasswordGate />;
     return (
       <div className="app-backdrop grid h-full place-items-center p-6">
         <div className="max-w-sm text-center">

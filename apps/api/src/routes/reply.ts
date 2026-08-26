@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import type { HonoEnv } from "../env";
-import { insertOutbound, getMessage } from "../db";
-import { getReplyEnabled, replyFrom } from "../settings";
+import type { HonoEnv } from "../env.ts";
+import { insertOutbound, getMessage } from "../db.ts";
+import { getReplyEnabled } from "../settings.ts";
+import { sendMail, resolveFrom, SendError } from "../send/index.ts";
+import { scopeOf } from "../middleware.ts";
 
 export const reply = new Hono<HonoEnv>();
 
@@ -28,28 +30,30 @@ reply.post("/", async (c) => {
   }
 
   // Reply FROM the alias this thread belongs to — i.e. the alias that received
-  // the original mail (inbound `to_addr`) — not the generic REPLY_FROM address.
-  const parent = await getMessage(c.env.DB, String(messageId));
-  const aliasFrom = parent
-    ? parent.direction === "in"
-      ? parent.to_addr
-      : parent.from_addr
-    : null;
-  const from = aliasFrom || replyFrom(c.env);
-  if (!from) return c.json({ error: "no sender address available" }, 500);
+  // the original mail (inbound `to_addr`) — not a generic instance-wide address.
+  const parent = await getMessage(c.env.DB, scopeOf(c), String(messageId));
 
-  // Undo-send flow: persist as pending; the legacy email worker's cron sends it.
+  let from: string;
+  try {
+    from = await resolveFrom(c.env.DB, { parent });
+  } catch (err) {
+    if (err instanceof SendError) return c.json(err.toJSON(), 400);
+    throw err;
+  }
+
+  const stored = {
+    inReplyToMessageId: String(messageId),
+    from,
+    to: String(to),
+    subject: String(subject),
+    html: html ?? null,
+    text: String(text ?? ""),
+  };
+
+  // Undo-send flow: persist as pending; the cron flushes it when the window ends.
   if (sendAfter) {
     try {
-      const id = await insertOutbound(c.env.DB, {
-        inReplyToMessageId: String(messageId),
-        from,
-        to: String(to),
-        subject: String(subject),
-        html: html ?? null,
-        text: String(text ?? ""),
-        sendAfter: Number(sendAfter),
-      });
+      const id = await insertOutbound(c.env.DB, scopeOf(c), { ...stored, sendAfter: Number(sendAfter) });
       return c.json({ ok: true, id, pending: true });
     } catch (err) {
       return c.json({ error: (err as Error)?.message ?? "failed" }, 500);
@@ -57,26 +61,21 @@ reply.post("/", async (c) => {
   }
 
   try {
-    const resp = await c.env.EMAIL.send({
-      to: String(to),
+    const resp = await sendMail(c.env, {
       from,
+      to: [String(to)],
       subject: String(subject),
       html: html ? String(html) : undefined,
       text: text ? String(text) : undefined,
+      inReplyTo: parent?.message_id ?? undefined,
+      references: parent?.message_id ? [parent.message_id] : undefined,
     });
 
-    const id = await insertOutbound(c.env.DB, {
-      inReplyToMessageId: String(messageId),
-      from,
-      to: String(to),
-      subject: String(subject),
-      html: html ?? null,
-      text: String(text ?? ""),
-    });
-
+    const id = await insertOutbound(c.env.DB, scopeOf(c), stored);
     return c.json({ ok: true, id, messageId: resp.messageId });
   } catch (err) {
     console.error("reply send failed", err);
+    if (err instanceof SendError) return c.json(err.toJSON(), 502);
     return c.json({ error: (err as Error)?.message ?? "send failed" }, 500);
   }
 });

@@ -2,7 +2,23 @@
 // A data-less push wakes the service worker, which shows a generic "new mail"
 // notification. Avoids the heavy aes128gcm payload encryption entirely.
 
-import type { Env } from "./env";
+import type { UserId } from "@email/shared";
+import type { Env } from "./env.ts";
+import { getSecret, reveal } from "./config/secrets.ts";
+import { getConfig } from "./config/index.ts";
+
+/** The two pieces of push configuration, read once per call. Passing them in
+ *  rather than reaching for env keeps vapidPublicKey pure and testable. */
+export type VapidConfig = { jwk: string; subject: string };
+
+export async function loadVapid(env: Env): Promise<VapidConfig | null> {
+  const secret = await getSecret(env.DB, env, "push.vapid_private_jwk");
+  const subject = (await getConfig(env.DB, "push.vapid_subject")).trim();
+  // Both halves are required: signing with a placeholder contact address gets
+  // the whole instance blocked by push services.
+  if (!secret || !subject) return null;
+  return { jwk: reveal(secret), subject };
+}
 
 function b64url(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -26,10 +42,10 @@ function b64urlDecode(s: string): Uint8Array {
  *  private JWK so it never has to be configured — and can never drift out of
  *  sync with the private half. A P-256 public key is the uncompressed EC point
  *  0x04 ‖ x ‖ y, which is exactly what the JWK's x/y coordinates give us. */
-export function vapidPublicKey(env: Env): string | null {
-  if (!env.VAPID_PRIVATE_JWK) return null;
+export function vapidPublicKey(privateJwk: string | null | undefined): string | null {
+  if (!privateJwk) return null;
   try {
-    const jwk = JSON.parse(env.VAPID_PRIVATE_JWK) as { x?: string; y?: string };
+    const jwk = JSON.parse(privateJwk) as { x?: string; y?: string };
     if (!jwk.x || !jwk.y) return null;
     const x = b64urlDecode(jwk.x);
     const y = b64urlDecode(jwk.y);
@@ -44,8 +60,8 @@ export function vapidPublicKey(env: Env): string | null {
   }
 }
 
-async function vapidJwt(env: Env, aud: string): Promise<string> {
-  const jwk = JSON.parse(env.VAPID_PRIVATE_JWK!);
+async function vapidJwt(vapid: VapidConfig, aud: string): Promise<string> {
+  const jwk = JSON.parse(vapid.jwk);
   const key = await crypto.subtle.importKey(
     "jwk",
     jwk,
@@ -58,7 +74,7 @@ async function vapidJwt(env: Env, aud: string): Promise<string> {
     JSON.stringify({
       aud,
       exp: Math.floor(Date.now() / 1000) + 12 * 3600,
-      sub: env.VAPID_SUBJECT!,
+      sub: vapid.subject,
     }),
   );
   const data = `${header}.${payload}`;
@@ -70,9 +86,13 @@ async function vapidJwt(env: Env, aud: string): Promise<string> {
   return `${data}.${b64url(sig)}`; // Web Crypto returns raw r||s — exactly ES256
 }
 
-async function sendPush(env: Env, endpoint: string, publicKey: string): Promise<number> {
+async function sendPush(
+  vapid: VapidConfig,
+  endpoint: string,
+  publicKey: string,
+): Promise<number> {
   const aud = new URL(endpoint).origin;
-  const jwt = await vapidJwt(env, aud);
+  const jwt = await vapidJwt(vapid, aud);
   const res = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -83,18 +103,28 @@ async function sendPush(env: Env, endpoint: string, publicKey: string): Promise<
   return res.status;
 }
 
-/** Push a data-less "new mail" wake to every subscription; prune dead ones. */
-export async function notifyNewMail(env: Env): Promise<void> {
-  // Push needs a key pair and a contact address; without either, stay quiet
-  // rather than signing with a placeholder subject.
-  const publicKey = vapidPublicKey(env);
-  if (!publicKey || !env.VAPID_SUBJECT?.trim()) return;
+/**
+ * Wake one user's devices. Data-less, so the service worker shows a generic
+ * "new mail" notification without the message ever leaving the origin.
+ *
+ * Scoped to the owner: pushing to every subscription would tell every user that
+ * somebody else had received mail, which is a metadata leak even with no payload.
+ */
+export async function notifyNewMail(env: Env, userId: UserId): Promise<void> {
+  const vapid = await loadVapid(env);
+  if (!vapid) return;
+  const publicKey = vapidPublicKey(vapid.jwk);
+  if (!publicKey) return;
+
   const subs =
-    (await env.DB.prepare(`SELECT endpoint FROM push_subscriptions`).all<{ endpoint: string }>())
-      .results ?? [];
+    (
+      await env.DB.prepare(`SELECT endpoint FROM push_subscriptions WHERE user_id = ?`)
+        .bind(userId)
+        .all<{ endpoint: string }>()
+    ).results ?? [];
   for (const s of subs) {
     try {
-      const status = await sendPush(env, s.endpoint, publicKey);
+      const status = await sendPush(vapid, s.endpoint, publicKey);
       if (status === 404 || status === 410) {
         await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?`)
           .bind(s.endpoint)

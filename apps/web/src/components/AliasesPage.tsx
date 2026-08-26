@@ -46,13 +46,13 @@ export function AliasesPage() {
     toast.success(`${addrs.length} alias${addrs.length > 1 ? "es" : ""} disabled`);
   }
 
-  const domains = settings.data?.alias_domains ?? [];
-  // Shape of generated addresses comes from the instance's ALIAS_SUFFIX.
-  const suffix = settings.data?.alias_suffix ?? "";
+  const domains = settings.data?.domains ?? [];
+  // Generated addresses carry the user's handle, so they route here by themselves.
+  const handle = settings.data?.user.handle ?? "";
   const [name, setName] = useState("");
   const [local, setLocal] = useState("");
   const [domain, setDomain] = useState("");
-  const dom = domain || settings.data?.primary_alias_domain || domains[0] || "";
+  const dom = domain || settings.data?.primary_domain || domains[0] || "";
 
   function generate() {
     setLocal(randomLocal());
@@ -98,14 +98,14 @@ export function AliasesPage() {
                 className="min-w-0 flex-1 bg-transparent outline-none"
               />
               <span className="shrink-0 font-mono text-xs text-faint">
-                {suffix ? `.${suffix}@` : "@"}
+                {handle ? `.${handle}@` : "@"}
               </span>
               <select
                 value={dom}
                 onChange={(e) => setDomain(e.target.value)}
                 className="shrink-0 bg-transparent font-mono text-xs text-muted outline-none"
               >
-                {domains.map((d) => (
+                {domains.map((d: string) => (
                   <option key={d} value={d}>
                     {d}
                   </option>

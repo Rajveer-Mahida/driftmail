@@ -62,13 +62,13 @@ export function CommandPalette() {
     close();
   }
   async function newAlias() {
-    const domain = settings.data?.primary_alias_domain;
+    const domain = settings.data?.primary_domain;
     if (!domain) {
-      toast.error("No alias domain configured", { description: "Set ALIAS_DOMAINS on the worker." });
+      toast.error("No mail domain yet", { description: "Add one in Settings → Domains." });
       close();
       return;
     }
-    const alias = randomAlias(domain, settings.data?.alias_suffix ?? "");
+    const alias = randomAlias(domain, settings.data?.user.handle ?? "");
     api.createAlias({ address: alias }).catch(() => {});
     try {
       await navigator.clipboard.writeText(alias);
