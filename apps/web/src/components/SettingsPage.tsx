@@ -369,6 +369,30 @@ function DomainsSection() {
   const rows = domains.data?.domains ?? [];
   const worker = domains.data?.worker;
 
+  // The server only re-checks DNS and flips routing_state inside GET
+  // /api/domains/:domain/status, and the setup wizard is otherwise its only
+  // caller. Poll it here for any domain still settling, or one added from this
+  // page reads "waiting for DNS" forever no matter what its records say.
+  const pendingNames = rows
+    .filter((d) => d.routing_state === "pending_dns" || d.routing_state === "enabling")
+    .map((d) => d.domain);
+  const pendingStatus = useQuery({
+    queryKey: ["domains", "status", pendingNames],
+    enabled: pendingNames.length > 0,
+    refetchInterval: 15_000,
+    queryFn: () =>
+      Promise.all(pendingNames.map((name) => api.domainStatus(name).catch(() => null))),
+  });
+  useEffect(() => {
+    const fresh = pendingStatus.data ?? [];
+    const changed = fresh.some(
+      (st, i) =>
+        st &&
+        st.routing_state !== rows.find((d) => d.domain === pendingNames[i])?.routing_state,
+    );
+    if (changed) void qc.invalidateQueries({ queryKey: ["domains"] });
+  }, [pendingStatus.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const STATE_LABEL: Record<string, string> = {
     ready: "receiving mail",
     pending_dns: "waiting for DNS",
