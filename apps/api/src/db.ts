@@ -118,7 +118,7 @@ export async function listMessages(
     labelId?: string;
     to?: string;
   } = {},
-): Promise<MessageRow[]> {
+): Promise<(MessageRow & { thread_count: number; thread_unread: number })[]> {
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   const view = opts.view ?? "inbox";
@@ -187,30 +187,40 @@ export async function listMessages(
   whereParts.push("m.user_id = ?");
   whereArgs.push(userId);
 
-  const sql = `SELECT m.* FROM messages m ${joins.join(" ")}
+  // One row per thread. Filters above are per-message, so a thread shows in a
+  // view iff ANY of its messages match, represented by the latest matching one:
+  // with a single MAX() aggregate, SQLite fills bare columns from the max row.
+  // thread_id is nullable on legacy rows, so they group as singletons.
+  const sql = `SELECT m.*,
+       COUNT(*) AS thread_count,
+       SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS thread_unread,
+       MAX(m.received_at) AS latest_at
+     FROM messages m ${joins.join(" ")}
      WHERE ${whereParts.join(" AND ")}
-     ORDER BY m.received_at DESC LIMIT ? OFFSET ?`;
+     GROUP BY COALESCE(m.thread_id, m.id)
+     ORDER BY latest_at DESC LIMIT ? OFFSET ?`;
   const res = await db
     .prepare(sql)
     .bind(...whereArgs, limit, offset)
-    .all<MessageRow>();
-  return res.results ?? [];
+    .all<MessageRow & { thread_count: number; thread_unread: number; latest_at?: number }>();
+  return (res.results ?? []).map(({ latest_at: _l, ...row }) => row);
 }
 
 export async function getViewCounts(db: DB, userId: UserId): Promise<ViewCounts> {
   const now = Date.now();
-  // COALESCE because SUM() over zero rows is NULL, not 0 — an empty mailbox
-  // would otherwise report `null` for every view in the sidebar.
+  // Threads, not messages, so the badges agree with the collapsed list. A CASE
+  // without ELSE yields NULL, which COUNT(DISTINCT …) ignores — so no COALESCE
+  // is needed for the empty-mailbox case either.
   const row = await db
     .prepare(
       `SELECT
-        COALESCE(SUM(CASE WHEN is_deleted=0 AND is_archived=0 AND direction='in' AND (snooze_until IS NULL OR snooze_until <= ?) THEN 1 ELSE 0 END), 0) as inbox,
-        COALESCE(SUM(CASE WHEN is_read=0 AND is_deleted=0 AND is_archived=0 AND direction='in' AND (snooze_until IS NULL OR snooze_until <= ?) THEN 1 ELSE 0 END), 0) as unread,
-        COALESCE(SUM(CASE WHEN is_starred=1 AND is_deleted=0 THEN 1 ELSE 0 END), 0) as starred,
-        COALESCE(SUM(CASE WHEN snooze_until > ? AND is_deleted=0 THEN 1 ELSE 0 END), 0) as snoozed,
-        COALESCE(SUM(CASE WHEN is_archived=1 AND is_deleted=0 THEN 1 ELSE 0 END), 0) as archived,
-        COALESCE(SUM(CASE WHEN is_deleted=1 THEN 1 ELSE 0 END), 0) as trash,
-        COALESCE(SUM(CASE WHEN direction='out' AND (send_state IS NULL OR send_state IN ('sent','pending')) THEN 1 ELSE 0 END), 0) as sent
+        COUNT(DISTINCT CASE WHEN is_deleted=0 AND is_archived=0 AND direction='in' AND (snooze_until IS NULL OR snooze_until <= ?) THEN COALESCE(thread_id, id) END) as inbox,
+        COUNT(DISTINCT CASE WHEN is_read=0 AND is_deleted=0 AND is_archived=0 AND direction='in' AND (snooze_until IS NULL OR snooze_until <= ?) THEN COALESCE(thread_id, id) END) as unread,
+        COUNT(DISTINCT CASE WHEN is_starred=1 AND is_deleted=0 THEN COALESCE(thread_id, id) END) as starred,
+        COUNT(DISTINCT CASE WHEN snooze_until > ? AND is_deleted=0 THEN COALESCE(thread_id, id) END) as snoozed,
+        COUNT(DISTINCT CASE WHEN is_archived=1 AND is_deleted=0 THEN COALESCE(thread_id, id) END) as archived,
+        COUNT(DISTINCT CASE WHEN is_deleted=1 THEN COALESCE(thread_id, id) END) as trash,
+        COUNT(DISTINCT CASE WHEN direction='out' AND (send_state IS NULL OR send_state IN ('sent','pending')) THEN COALESCE(thread_id, id) END) as sent
       FROM messages WHERE user_id = ?`,
     )
     .bind(now, now, now, userId)
@@ -314,9 +324,17 @@ export async function markRead(
   id: string,
   read = true,
 ): Promise<void> {
+  // Whole conversation, not just this copy: mail delivered to N of the user's
+  // aliases is N rows in one thread, and opening any of them must clear the
+  // list row's unread state.
   await db
-    .prepare(`UPDATE messages SET is_read = ? WHERE id = ? AND user_id = ?`)
-    .bind(read ? 1 : 0, id, userId)
+    .prepare(
+      `UPDATE messages SET is_read = ?
+       WHERE user_id = ?
+         AND COALESCE(thread_id, id) =
+             (SELECT COALESCE(thread_id, id) FROM messages WHERE id = ? AND user_id = ?)`,
+    )
+    .bind(read ? 1 : 0, userId, id, userId)
     .run();
 }
 
@@ -373,13 +391,22 @@ export async function setFlag(
   ids: string[],
   field: "is_starred" | "is_archived" | "is_deleted" | "is_read",
   value: 0 | 1,
+  opts?: { byThread?: boolean },
 ): Promise<void> {
   if (!ids.length) return;
   for (const c of chunk(ids, 100)) {
     const ph = c.map(() => "?").join(",");
+    // The list shows one representative row per thread, so archive/trash/read
+    // from it must take the whole thread — else the next-latest copy of the
+    // same conversation surfaces right back. Stars stay per-message.
+    const where = opts?.byThread
+      ? `COALESCE(thread_id, id) IN (
+           SELECT COALESCE(thread_id, id) FROM messages WHERE user_id = ? AND id IN (${ph}))`
+      : `id IN (${ph})`;
+    const args = opts?.byThread ? [value, userId, userId, ...c] : [value, userId, ...c];
     await db
-      .prepare(`UPDATE messages SET ${field} = ? WHERE user_id = ? AND id IN (${ph})`)
-      .bind(value, userId, ...c)
+      .prepare(`UPDATE messages SET ${field} = ? WHERE user_id = ? AND ${where}`)
+      .bind(...args)
       .run();
   }
 }
@@ -389,13 +416,19 @@ export async function setSnooze(
   userId: UserId,
   ids: string[],
   until: number | null,
+  opts?: { byThread?: boolean },
 ): Promise<void> {
   if (!ids.length) return;
   for (const c of chunk(ids, 100)) {
     const ph = c.map(() => "?").join(",");
+    const where = opts?.byThread
+      ? `COALESCE(thread_id, id) IN (
+           SELECT COALESCE(thread_id, id) FROM messages WHERE user_id = ? AND id IN (${ph}))`
+      : `id IN (${ph})`;
+    const args = opts?.byThread ? [until, userId, userId, ...c] : [until, userId, ...c];
     await db
-      .prepare(`UPDATE messages SET snooze_until = ? WHERE user_id = ? AND id IN (${ph})`)
-      .bind(until, userId, ...c)
+      .prepare(`UPDATE messages SET snooze_until = ? WHERE user_id = ? AND ${where}`)
+      .bind(...args)
       .run();
   }
 }

@@ -99,8 +99,8 @@ export const api = {
     req<{ ok: boolean; status?: number }>(`/api/messages/${id}/unsubscribe`, { method: "POST" }),
 
   // mutations
-  flag: (ids: string[], field: FlagField, value: 0 | 1) =>
-    req<{ ok: true }>("/api/messages/flag", body({ ids, field, value })),
+  flag: (ids: string[], field: FlagField, value: 0 | 1, byThread?: boolean) =>
+    req<{ ok: true }>("/api/messages/flag", body({ ids, field, value, byThread })),
   markRead: (id: string, read: boolean) =>
     req<{ ok: true }>("/api/messages/mark-read", body({ id, read })),
   markAllRead: (view: ViewName, labelId?: string | null) =>
@@ -108,8 +108,8 @@ export const api = {
   softDelete: (id: string) => req<{ ok: true }>("/api/messages/delete", body({ id })),
   permanentDelete: (ids: string[]) =>
     req<{ ok: true }>("/api/messages/permanent-delete", body({ ids })),
-  snooze: (ids: string[], until: number | null) =>
-    req<{ ok: true }>("/api/messages/snooze", body({ ids, until })),
+  snooze: (ids: string[], until: number | null, byThread?: boolean) =>
+    req<{ ok: true }>("/api/messages/snooze", body({ ids, until, byThread })),
   applyLabels: (messageIds: string[], labelIds: string[]) =>
     req<{ ok: true }>("/api/messages/labels", body({ messageIds, labelIds })),
   removeLabel: (messageId: string, labelId: string) =>

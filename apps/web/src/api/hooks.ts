@@ -163,8 +163,11 @@ function settle(qc: QueryClient) {
 export function useFlag() {
   const qc = useQueryClient();
   return useMutation({
+    // The list shows one row per thread, so archive/trash/read act on the whole
+    // conversation — otherwise the next-latest copy resurfaces. Stars stay
+    // per-message.
     mutationFn: ({ ids, field, value }: { ids: string[]; field: FlagField; value: 0 | 1 }) =>
-      api.flag(ids, field, value),
+      api.flag(ids, field, value, field !== "is_starred"),
     onMutate: async ({ ids, field, value }) => {
       await qc.cancelQueries({ queryKey: ["messages"] });
       const set = new Set(ids);
@@ -184,7 +187,7 @@ export function useMarkRead() {
   return useMutation({
     mutationFn: ({ id, read }: { id: string; read: boolean }) => api.markRead(id, read),
     onMutate: async ({ id, read }) => {
-      patchInLists(qc, new Set([id]), { is_read: read ? 1 : 0 });
+      patchInLists(qc, new Set([id]), { is_read: read ? 1 : 0, thread_unread: read ? 0 : 1 });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.counts }),
   });
@@ -194,7 +197,7 @@ export function useSnooze() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ ids, until }: { ids: string[]; until: number | null }) =>
-      api.snooze(ids, until),
+      api.snooze(ids, until, true),
     onMutate: async ({ ids }) => {
       await qc.cancelQueries({ queryKey: ["messages"] });
       removeFromLists(qc, new Set(ids));

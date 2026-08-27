@@ -170,24 +170,24 @@ messages.post("/delete", async (c) => {
 });
 
 messages.post("/flag", async (c) => {
-  const { ids, field, value } = await c.req
-    .json<{ ids?: string[]; field?: string; value?: 0 | 1 }>()
+  const { ids, field, value, byThread } = await c.req
+    .json<{ ids?: string[]; field?: string; value?: 0 | 1; byThread?: boolean }>()
     .catch(() => ({}) as Record<string, never>);
   if (!ids?.length || !field || !FLAG_FIELDS.includes(field as FlagField) || value === undefined) {
     return c.json({ error: "invalid params" }, 400);
   }
-  await setFlag(c.env.DB, scopeOf(c), ids, field as FlagField, value);
+  await setFlag(c.env.DB, scopeOf(c), ids, field as FlagField, value, { byThread });
   return c.json({ ok: true });
 });
 
 messages.post("/snooze", async (c) => {
-  const { ids, until } = await c.req
-    .json<{ ids?: string[]; until?: number | null }>()
+  const { ids, until, byThread } = await c.req
+    .json<{ ids?: string[]; until?: number | null; byThread?: boolean }>()
     .catch(() => ({}) as Record<string, never>);
   if (!ids?.length || until === undefined) {
     return c.json({ error: "ids and until required" }, 400);
   }
-  await setSnooze(c.env.DB, scopeOf(c), ids, until);
+  await setSnooze(c.env.DB, scopeOf(c), ids, until, { byThread });
   return c.json({ ok: true });
 });
 

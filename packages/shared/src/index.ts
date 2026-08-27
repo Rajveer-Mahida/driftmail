@@ -135,9 +135,14 @@ export type CountsResponse = {
   drafts: number;
 };
 
-/** A list row is the message minus heavy body fields, plus its labels. */
+/** A list row: one row per thread — the latest message matching the current
+ *  view, minus heavy body fields, plus its labels and thread tallies. */
 export type MessageListItem = Omit<MessageRow, "html" | "text"> & {
   labels: LabelRow[];
+  /** Messages in this thread matching the current view/filter. */
+  thread_count: number;
+  /** Unread among them. */
+  thread_unread: number;
 };
 
 /** Full message detail: the message, its thread, per-message attachments, and labels. */

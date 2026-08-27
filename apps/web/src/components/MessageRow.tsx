@@ -22,7 +22,7 @@ export function MessageRow({
   const markRead = useMarkRead();
 
   const selected = selection.has(m.id);
-  const unread = m.is_read === 0 && m.direction === "in";
+  const unread = (m.thread_unread > 0 || m.is_read === 0) && m.direction === "in";
   const selectMode = selection.size > 0;
 
   const x = useMotionValue(0);
@@ -119,6 +119,11 @@ export function MessageRow({
             >
               {peerName}
             </span>
+            {m.thread_count > 1 && (
+              <span className="shrink-0 text-[12px] tabular-nums text-faint">
+                ({m.thread_count})
+              </span>
+            )}
             <span className="ml-auto shrink-0 text-[11px] tabular-nums text-faint">
               {formatRelativeTime(m.received_at)}
             </span>

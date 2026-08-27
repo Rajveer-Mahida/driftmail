@@ -331,3 +331,126 @@ test("an empty mailbox counts zero, not null", async () => {
   });
   d.close();
 });
+
+// ── thread-collapsed list ────────────────────────────────────────────────────
+
+/** Insert an inbound message row with a chosen thread_id. */
+async function insertThreaded(
+  d: FakeD1,
+  uid: UserId,
+  id: string,
+  threadId: string,
+  opts: { receivedAt: number; isRead?: 0 | 1; direction?: "in" | "out" } = { receivedAt: 1 },
+) {
+  await asD1(d)
+    .prepare(
+      `INSERT INTO messages (id, user_id, message_id, thread_id, direction, from_addr, to_addr,
+                             subject, snippet, text, raw_key, received_at, is_read)
+         VALUES (?,?,?,?,?,'sender@out.com','x@example.com','Groovy','snip','body',?,?,?)`,
+    )
+    .bind(
+      id,
+      uid,
+      `<${id}@x>`,
+      threadId,
+      opts.direction ?? "in",
+      `u/${uid}/emails/${id}.eml`,
+      opts.receivedAt,
+      opts.isRead ?? 0,
+    )
+    .run();
+}
+
+test("one send to two aliases collapses to one list row with counts", async () => {
+  const { d, a } = await world();
+  await insertThreaded(d, a, "c1", "t-shared", { receivedAt: 100, isRead: 1 });
+  await insertThreaded(d, a, "c2", "t-shared", { receivedAt: 200, isRead: 0 });
+
+  const rows = await listMessages(asD1(d), a, { view: "inbox" });
+  const thread = rows.filter((r) => r.thread_id === "t-shared");
+  assert.equal(thread.length, 1, "one row per thread");
+  assert.equal(thread[0].id, "c2", "representative is the latest message");
+  assert.equal(thread[0].thread_count, 2);
+  assert.equal(thread[0].thread_unread, 1);
+});
+
+test("identical thread_id never merges across users", async () => {
+  const { d, a, b } = await world();
+  await insertThreaded(d, a, "xa", "t-cross", { receivedAt: 10 });
+  await insertThreaded(d, b, "xb", "t-cross", { receivedAt: 20 });
+
+  const rowsA = await listMessages(asD1(d), a, { view: "inbox" });
+  const mine = rowsA.filter((r) => r.thread_id === "t-cross");
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].id, "xa", "A's representative is A's own row, not B's newer one");
+  assert.equal(mine[0].thread_count, 1);
+});
+
+test("sent view groups only outbound copies of a thread", async () => {
+  const { d, a } = await world();
+  await insertThreaded(d, a, "in1", "t-mixed", { receivedAt: 10, direction: "in" });
+  await insertThreaded(d, a, "out1", "t-mixed", { receivedAt: 20, direction: "out" });
+  await insertThreaded(d, a, "out2", "t-mixed", { receivedAt: 30, direction: "out" });
+
+  const sent = (await listMessages(asD1(d), a, { view: "sent" })).filter(
+    (r) => r.thread_id === "t-mixed",
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].thread_count, 2, "counts outbound only");
+
+  const inbox = (await listMessages(asD1(d), a, { view: "inbox" })).filter(
+    (r) => r.thread_id === "t-mixed",
+  );
+  assert.equal(inbox[0].thread_count, 1, "counts inbound only");
+});
+
+test("markRead clears every copy in the thread, and only that user's", async () => {
+  const { d, a, b } = await world();
+  await insertThreaded(d, a, "r1", "t-read", { receivedAt: 10, isRead: 0 });
+  await insertThreaded(d, a, "r2", "t-read", { receivedAt: 20, isRead: 0 });
+  await insertThreaded(d, b, "rb", "t-read", { receivedAt: 30, isRead: 0 });
+
+  await markRead(asD1(d), a, "r1", true);
+  const readA = d.query(`SELECT id, is_read FROM messages WHERE thread_id = 't-read'`);
+  assert.deepEqual(
+    Object.fromEntries(readA.map((r: any) => [r.id, r.is_read])),
+    { r1: 1, r2: 1, rb: 0 },
+  );
+});
+
+test("byThread flag archives all copies; without it only the named id", async () => {
+  const { d, a } = await world();
+  await insertThreaded(d, a, "f1", "t-flag", { receivedAt: 10 });
+  await insertThreaded(d, a, "f2", "t-flag", { receivedAt: 20 });
+
+  await setFlag(asD1(d), a, ["f2"], "is_starred", 1);
+  let rows = d.query(`SELECT id, is_starred FROM messages WHERE thread_id = 't-flag'`);
+  assert.deepEqual(
+    Object.fromEntries(rows.map((r: any) => [r.id, r.is_starred])),
+    { f1: 0, f2: 1 },
+    "per-message without byThread",
+  );
+
+  await setFlag(asD1(d), a, ["f2"], "is_archived", 1, { byThread: true });
+  rows = d.query(`SELECT id, is_archived FROM messages WHERE thread_id = 't-flag'`);
+  assert.deepEqual(
+    Object.fromEntries(rows.map((r: any) => [r.id, r.is_archived])),
+    { f1: 1, f2: 1 },
+    "whole thread with byThread",
+  );
+  const inbox = (await listMessages(asD1(d), a, { view: "inbox" })).filter(
+    (r) => r.thread_id === "t-flag",
+  );
+  assert.equal(inbox.length, 0, "archived thread does not resurface");
+});
+
+test("view counts are per-thread, not per-message", async () => {
+  const { d, a } = await world();
+  const before = await getViewCounts(asD1(d), a);
+  await insertThreaded(d, a, "v1", "t-count", { receivedAt: 10, isRead: 0 });
+  await insertThreaded(d, a, "v2", "t-count", { receivedAt: 20, isRead: 0 });
+
+  const after = await getViewCounts(asD1(d), a);
+  assert.equal(after.inbox, before.inbox + 1, "two copies count as one inbox thread");
+  assert.equal(after.unread, before.unread + 1);
+});
