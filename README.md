@@ -1,6 +1,6 @@
 # Driftmail
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Rajveer-Mahida/claoudflare-email-client-v2)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Rajveer-Mahida/driftmail)
 
 A private inbox that runs entirely on your own Cloudflare account. One Worker
 serves the app, receives your mail, and configures its own delivery.
@@ -48,7 +48,7 @@ Sending is optional and comes later in the wizard. Receiving works without it.
 Paste this into an agent with terminal access (Claude Code, Codex, Cursor…):
 
 ```text
-Install Driftmail from https://github.com/Rajveer-Mahida/claoudflare-email-client-v2
+Install Driftmail from https://github.com/Rajveer-Mahida/driftmail
 on my Cloudflare account. Read README.md and wrangler.jsonc first.
 Ask me for my Cloudflare account ID and a deploy API token through a secret
 input (Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Account Settings
