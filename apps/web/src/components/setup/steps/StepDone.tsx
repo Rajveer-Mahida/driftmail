@@ -47,7 +47,11 @@ export function StepDone({ state, next, onFinish }: Props) {
         <Row
           ok={!!state.domain}
           label={state.domain ? `${state.domain} added` : "No mail domain yet"}
-          detail={state.domain ? undefined : "Add one in Settings → Domains to start receiving."}
+          detail={
+            state.domain
+              ? "More domains? Add them on the Domains page — same inbox, no new deployment."
+              : "Add one on the Domains page to start receiving."
+          }
         />
         <Row
           ok={routingReady}

@@ -20,6 +20,7 @@ import {
   PanelLeft,
   LogOut,
   Users,
+  Globe,
   X,
 } from "lucide-react";
 import type { ViewName } from "@email/shared";
@@ -87,7 +88,7 @@ export function Sidebar() {
   async function genAlias() {
     const domain = settings.data?.primary_domain;
     if (!domain) {
-      toast.error("No mail domain yet", { description: "Add one in Settings → Domains." });
+      toast.error("No mail domain yet", { description: "Add one on the Domains page." });
       return;
     }
     const alias = randomAlias(domain, settings.data?.user.handle ?? "");
@@ -263,6 +264,18 @@ export function Sidebar() {
             onClick={() => {
               setMobileNav(false);
               navigate({ to: "/users" });
+            }}
+          />
+        )}
+        {settings.data?.user.role === "admin" && (
+          <SideItem
+            active={pathname === "/domains"}
+            collapsed={collapsed}
+            icon={<Globe size={18} />}
+            label="Domains"
+            onClick={() => {
+              setMobileNav(false);
+              navigate({ to: "/domains" });
             }}
           />
         )}

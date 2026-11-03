@@ -303,8 +303,10 @@ test("SETUP_TOKEN claims work, and only with the right value", async () => {
     env as never,
   );
   assert.equal(right.status, 200);
-  // With no Cloudflare token, the Worker name still has to be confirmed by hand.
-  assert.equal(((await right.json()) as { nextStep: string }).nextStep, "worker");
+  // No Worker step any more: the fixed default name ("driftmail") is used.
+  const rightBody = (await right.json()) as { nextStep: string; worker: { name: string } };
+  assert.equal(rightBody.nextStep, "domain");
+  assert.equal(rightBody.worker.name, "driftmail");
   d.close();
 });
 
@@ -408,8 +410,9 @@ test("localhost plus the opt-in claims, and stores the token", async () => {
 
     const body = (await res.json()) as { worker: { source: string }; nextStep: string };
     assert.equal(body.worker.source, "local");
-    // The Worker's name can't be detected locally, so the wizard asks for it.
-    assert.equal(body.nextStep, "worker");
+    // The Worker's name can't be detected locally; the default is used instead
+    // of asking, so the wizard goes straight to the domain.
+    assert.equal(body.nextStep, "domain");
 
     // The point of this path over SETUP_TOKEN: the token IS stored, so the
     // domain and DNS steps work against real Cloudflare while developing.

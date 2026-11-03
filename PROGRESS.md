@@ -1,7 +1,9 @@
 # Driftmail — Progress Tracker
 
-Live: **https://driftmail.rajveer.space**
-Single Cloudflare Worker `smi-mail` (instance `smi` in `instances.jsonc`): SPA (Vite/React 19) + Hono JSON API + inbound email ingest + undo-send/scheduled cron, on the existing D1 `cf-email-alies` + R2 `smi-email-cache`.
+One Cloudflare Worker, `driftmail`: SPA (Vite/React 19) + Hono JSON API + inbound
+email for every added domain + undo-send/scheduled cron, on D1 `driftmail` and R2
+`driftmail-mail`. Domains are added in the app (Domains page), not by deploying
+more instances.
 
 ## ✅ Completed
 
@@ -65,20 +67,11 @@ Single Cloudflare Worker `smi-mail` (instance `smi` in `instances.jsonc`): SPA (
 
 ## 🎉 All 8 phases complete
 
-## ⚠️ Operator actions required (need your Cloudflare account)
-- **Email Sending onboarding** — sending (compose/reply/forward) fails with "destination not verified" until the domains are onboarded. Both domains at once:
-  - `pnpm instance:mail smi` (idempotent; `--dry-run` to preview)
-  - Receiving, aliases, rules, search, push all work without this.
-- **AI key** — Summarize / Suggest replies return "AI not set up yet" until set:
-  - `npx wrangler secret put ANTHROPIC_API_KEY -c instances.jsonc -e smi`
-
-## Migrations applied (D1 `cf-email-alies`)
-`0004_compose` (cc/bcc + drafts) · `0005_aliases` · `0006_rules` · `0007_push`
-(`0001`–`0003` from the original project: messages/attachments/labels/settings/FTS)
-
 ## Deploy
-`pnpm deploy:smi` — builds the SPA with the instance origin derived from the
-route, then `wrangler deploy -c instances.jsonc -e smi`. Passes
-`--skip-migrations`: this D1 predates migration bookkeeping and `0004`'s bare
-`ALTER TABLE`s would fail against it.
-Secrets: `AUTH_SECRET`, `AUTH_PASSWORD`, `VAPID_PRIVATE_JWK`, `ANTHROPIC_API_KEY`.
+`pnpm run deploy` = `pnpm build` (bundles migrations + builds the SPA) + `wrangler deploy`.
+Wrangler finds or creates D1 `driftmail` and R2 `driftmail-mail` by name.
+The Worker applies migrations itself: automatically on an empty database, and
+from Settings → "Update database" afterwards. See README → Deploying updates.
+
+Optional Worker secrets/vars: `SETUP_TOKEN`, `CONFIG_ENC_KEY`, `WORKER_NAME`,
+`ANTHROPIC_API_KEY` (AI summarize / smart reply).

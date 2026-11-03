@@ -189,7 +189,13 @@ export type DomainRow = {
   routing_state: "none" | "enabling" | "pending_dns" | "ready" | "error";
   routing_error: string | null;
   accept_all: number;
+  /** Comma-separated address globs; only enforced when accept_all is 0. */
+  allowed_pattern: string | null;
   alias_suffix: string | null;
+  /** Copy every delivered message here. */
+  forward_to: string | null;
+  /** Where rejected mail goes instead of bouncing. */
+  fallback_forward_to: string | null;
   catchall_user_id: string | null;
   send_provider: "resend" | "cloudflare" | "none" | null;
   send_state: "none" | "pending_dns" | "verifying" | "verified" | "failed";

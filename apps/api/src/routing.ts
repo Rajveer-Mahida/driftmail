@@ -3,7 +3,7 @@
 // The instance accepts every address on its domains — that is the point of a
 // catch-all — so this is not an allow/deny check so much as an ownership lookup.
 
-import { globToRe, loadPolicies, type DomainPolicy } from "./config/domains.ts";
+import { addressAllowedByPolicy, globToRe, loadPolicies, type DomainPolicy } from "./config/domains.ts";
 
 type DB = D1Database;
 
@@ -20,6 +20,7 @@ export type RejectCode =
   | "unknown_domain"
   | "disabled_alias"
   | "disabled_owner"
+  | "not_allowed"
   | "no_owner";
 
 export type Resolution =
@@ -165,6 +166,7 @@ async function isDisabled(db: DB, userId: string): Promise<boolean> {
  *
  * Rules, first match wins:
  *   R0  the domain must be one this instance handles
+ *   R0b and the address must pass its accept rule (all, or matching a pattern)
  *   R1  an exact alias
  *   R1b the alias for the plus-stripped address
  *   R2  a user's handle, or their login email
@@ -186,6 +188,13 @@ export async function resolveRecipient(
   const all = policies ?? (await loadPolicies(db));
   const policy = matchPolicy(all, n.domain);
   if (!policy) return { kind: "reject", code: "unknown_domain", recipient: n.recipient };
+
+  // R0b — the domain's accept rule. With "only addresses matching a pattern",
+  // nothing else gets a say: not aliases, handles or the catch-all. The
+  // plus-stripped form counts too, so career+linkedin@ passes for career@.
+  if (!addressAllowedByPolicy(policy, n.recipient) && !addressAllowedByPolicy(policy, n.baseAddress)) {
+    return { kind: "reject", code: "not_allowed", recipient: n.recipient, policy };
+  }
 
   const deliver = async (
     userId: string,

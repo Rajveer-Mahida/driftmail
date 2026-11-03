@@ -24,7 +24,9 @@ import {
   listDns,
   recordDns,
   upsertDomain,
+  validatePatterns,
 } from "../config/domains.ts";
+import { validateEmail } from "../users.ts";
 import { requireAdmin } from "../middleware.ts";
 
 export const domains = new Hono<HonoEnv>();
@@ -41,7 +43,7 @@ function failure(c: Context<HonoEnv>, err: unknown) {
     // exist. Without this hint the message reads like a Cloudflare outage rather
     // than a typo in the stored Worker name.
     const hint = /workers script.*not found/i.test(err.message)
-      ? "The stored Worker name doesn't match any script in your account. Fix it at the Worker step of setup — it must match the name at the top of the Worker's dashboard page exactly."
+      ? "The stored Worker name doesn't match any script in your account. Fix it on the Domains page (Worker name) — it must match the name at the top of the Worker's dashboard page exactly."
       : authHint(err);
     return c.json({ error: err.message, hint }, err.status === 403 ? 403 : 502);
   }
@@ -137,6 +139,15 @@ domains.post("/", async (c) => {
     return c.json({ error: "This Worker's name hasn't been detected yet." }, 400);
   }
 
+  // Same rules as editing later, so a domain can't be added with a pattern
+  // that would accept nothing.
+  let allowedPattern: string | null = null;
+  if (body.acceptAll === false) {
+    const v = validatePatterns(domain, body.allowedPattern ?? "");
+    if (!v.ok) return c.json({ error: v.error }, 400);
+    allowedPattern = v.patterns.join(", ");
+  }
+
   try {
     // The one genuinely destructive step in the whole flow, so it gets said out
     // loud beforehand rather than discovered afterwards.
@@ -186,7 +197,7 @@ domains.post("/", async (c) => {
       catch_all_worker: worker,
       routing_error: null,
       accept_all: body.acceptAll === false ? 0 : 1,
-      allowed_pattern: body.allowedPattern?.trim() || null,
+      allowed_pattern: allowedPattern,
       alias_suffix: body.aliasSuffix?.trim() || null,
       fallback_forward_to: body.fallbackForwardTo?.trim() || null,
       forward_to: body.forwardTo?.trim() || null,
@@ -262,6 +273,71 @@ domains.get("/:domain/status", async (c) => {
     records: await listDns(c.env.DB, name, "routing"),
     checks: { mx_live: mxLive, spf_live: spfLive, observed_mx: mx },
   });
+});
+
+/**
+ * Change how a domain accepts and forwards mail, after it was added.
+ *
+ *   acceptAll          true: every address; false: only `allowedPattern`
+ *   allowedPattern     "career@x.com, *.shop@x.com" — required when acceptAll is false
+ *   forwardTo          copy every delivered message to this address ("" clears)
+ *   fallbackForwardTo  where rejected mail goes instead of bouncing ("" clears)
+ *
+ * Forwarding goes through Cloudflare, which only forwards to addresses verified
+ * under Email Routing → Destination addresses.
+ */
+domains.patch("/:domain", async (c) => {
+  const name = c.req.param("domain").toLowerCase();
+  const row = await getDomain(c.env.DB, name);
+  if (!row) return c.json({ error: "not found" }, 404);
+
+  type PatchBody = {
+    acceptAll?: boolean;
+    allowedPattern?: string;
+    forwardTo?: string | null;
+    fallbackForwardTo?: string | null;
+  };
+  const body = await c.req.json<PatchBody>().catch(() => ({}) as PatchBody);
+  const update: Parameters<typeof upsertDomain>[2] = {};
+
+  if (body.acceptAll !== undefined || body.allowedPattern !== undefined) {
+    const acceptAll = body.acceptAll ?? row.accept_all === 1;
+    if (acceptAll) {
+      update.accept_all = 1;
+      // Kept, so switching back to "only these" restores the list.
+      if (body.allowedPattern !== undefined) {
+        update.allowed_pattern = body.allowedPattern.trim() || null;
+      }
+    } else {
+      const v = validatePatterns(name, body.allowedPattern ?? row.allowed_pattern ?? "");
+      if (!v.ok) return c.json({ error: v.error }, 400);
+      update.accept_all = 0;
+      update.allowed_pattern = v.patterns.join(", ");
+    }
+  }
+
+  for (const [key, column] of [
+    ["forwardTo", "forward_to"],
+    ["fallbackForwardTo", "fallback_forward_to"],
+  ] as const) {
+    const raw = body[key];
+    if (raw === undefined) continue;
+    const value = raw?.trim() ?? "";
+    if (!value) {
+      update[column] = null;
+      continue;
+    }
+    const v = validateEmail(value);
+    if (!v.ok) return c.json({ error: `${v.error}: ${value}` }, 400);
+    // Forwarding into the same domain would loop straight back into this Worker.
+    if (v.email.endsWith(`@${name}`)) {
+      return c.json({ error: `Forward to an inbox outside ${name}, or the mail loops back here.` }, 400);
+    }
+    update[column] = v.email;
+  }
+
+  const saved = await upsertDomain(c.env.DB, name, update);
+  return c.json({ ok: true, domain: saved });
 });
 
 /** Promote a domain to primary; the incumbent is demoted automatically by the

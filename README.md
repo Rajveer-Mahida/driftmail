@@ -15,21 +15,19 @@ Every address on your domain arrives here. `you@`, `netflix.you@`,
 
 ## Setting it up
 
-1. **Deploy it.**
-
-   From a clone — name your resources after your domain first, then deploy:
+1. **Deploy it.** Click **Deploy to Cloudflare** and keep the default names, or
+   from a clone:
 
    ```bash
    pnpm install
-   pnpm provision example.com    # creates example-com-driftmail (D1 + R2)
    pnpm run deploy               # `pnpm deploy` is a built-in pnpm command
    ```
 
-   Or click the Deploy to Cloudflare button, and rename the database and bucket
-   in its form. **A D1 database can never be renamed afterwards** — there's no
-   `wrangler d1 rename` and no way to do it from the dashboard — so this is the
-   one moment it can be got right.
-2. **Open it in a browser.** You'll land on `/setup`.
+   That's the whole deploy: build, then `wrangler deploy`. Wrangler finds the
+   `driftmail` D1 database and `driftmail-mail` bucket in your account, or
+   creates them. There are no ids to paste and no migrations to run.
+2. **Open it in a browser.** You'll land on `/setup`. The app creates its own
+   database tables on that first visit.
 3. **Paste a Cloudflare API token.** Either kind works — an account-owned token
    (Manage Account → Account API Tokens; survives you leaving the account) or a
    user token (My Profile → API Tokens). The wizard lists what the token must be
@@ -38,9 +36,28 @@ Every address on your domain arrives here. `you@`, `netflix.you@`,
    spell the same permissions differently. The token then turns on Email
    Routing, writes your MX and SPF records, and points your domain's catch-all
    at this Worker.
-4. **Pick your domain, then your password.** That's the whole thing.
+4. **Pick your first domain, then your password.** Done.
+5. **More domains?** Open **Domains** in the sidebar and click **Add** next to
+   any zone in the account. Same inbox, same Worker — one Driftmail serves all
+   your domains.
 
 Sending is optional and comes later in the wizard. Receiving works without it.
+
+### Deploy with an AI agent
+
+Paste this into an agent with terminal access (Claude Code, Codex, Cursor…):
+
+```text
+Install Driftmail from https://github.com/Rajveer-Mahida/claoudflare-email-client-v2
+on my Cloudflare account. Read README.md and wrangler.jsonc first.
+Ask me for my Cloudflare account ID and a deploy API token through a secret
+input (Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Account Settings
+Read). Never print it, commit it, or pass it as a command argument; use it only
+as CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID for Wrangler.
+Keep the Worker name "driftmail". Run `pnpm install` and `pnpm run deploy`.
+Do not run D1 migrations; the app does that. Give me the workers.dev URL.
+I will open /setup, paste a runtime token there, and add my domains.
+```
 
 ### Why the token is the first step
 
@@ -127,7 +144,7 @@ of that, so Driftmail doesn't pretend to. What actually helps:
 - **Scope the token.** The wizard nudges you toward a token limited to the one
   zone you use for mail. A token that can't touch your other domains is worth
   more than encryption around one that can.
-- **Rotate it.** Settings → Domains has replace and revoke.
+- **Rotate it.** Roll it in the Cloudflare dashboard. (Replacing the stored token from inside the app is not built yet.)
 - **Optionally, bring your own key.** Set a `CONFIG_ENC_KEY` secret on the
   Worker and stored credentials are wrapped with AES-GCM under it. That key
   lives outside the database, so it *is* a real boundary — against a leaked D1
@@ -138,32 +155,27 @@ of that, so Driftmail doesn't pretend to. What actually helps:
 
 ## Resource names
 
-`pnpm provision <domain>` names everything after the domain, so one Cloudflare
-account can host several instances without them colliding:
+Fixed, and the same in every account:
 
 | | |
 |---|---|
-| Worker | `example-com-driftmail` |
-| D1 database | `example-com-driftmail` |
-| R2 bucket | `example-com-driftmail-mail` |
+| Worker | `driftmail` |
+| D1 database | `driftmail` |
+| R2 bucket | `driftmail-mail` |
 
-Dots aren't valid in Cloudflare resource names, so they become hyphens. The
-whole domain is used rather than just `example`, so `example.com` and
-`example.org` don't fight over the same name.
+Domains are data in that database, not part of the names — so adding a domain
+never means a new deployment, and nothing has to be decided before deploying.
 
-The Worker name matters beyond tidiness: Cloudflare's catch-all rule points at a
-Worker **by name**, so two instances sharing one would silently steal each
-other's mail.
-
-Re-running `provision` is safe — it adopts resources that already exist rather
-than creating duplicates, and rewrites `wrangler.jsonc` in place, comments and
-all.
+The Worker name matters: Cloudflare's catch-all rule points at a Worker **by
+name**. Setup detects it from the hostname you open, falling back to
+`driftmail`. If you deploy under another name, set a `WORKER_NAME` var on the
+Worker, or change it on the Domains page.
 
 ## Local development
 
 ```bash
 pnpm install
-pnpm db:local          # apply migrations to the local D1
+pnpm db:local          # optional: the app also initializes an empty local D1 itself
 pnpm dev:api           # the Worker, on :8787
 pnpm dev               # the SPA, on :5173 (proxies /api to :8787)
 ```
@@ -200,13 +212,22 @@ apps/web/src/
   components/setup/  the first-run wizard
 packages/shared/     the JSON contract between the two
 scripts/
-  provision.mjs      names your Cloudflare resources after your domain
+  bundle-migrations.mjs  packs apps/api/migrations into the Worker
 ```
 
 ## Deploying updates
 
-`pnpm run deploy` builds the SPA, applies pending D1 migrations, and deploys —
-migrations first, so new code never boots against an old schema.
+`pnpm run deploy` builds and deploys. It never touches the database.
 
-Note the `run`: `pnpm deploy` on its own is pnpm's own built-in command for
-deploying a workspace package, and it shadows this script.
+When a new version brings migrations, admins see **Database update available**
+in Settings; **Update database** applies them. Each migration runs in one D1
+batch with its `d1_migrations` ledger row — the same ledger `wrangler d1
+migrations apply` writes, so Wrangler still works for manual recovery:
+
+```bash
+npx wrangler d1 migrations apply DB --remote
+```
+
+Adding a migration: put a new `apps/api/migrations/NNNN_name.sql` in place and
+run `pnpm db:bundle` (build and `dev:api` do it too). The test suite fails if
+the committed bundle is stale.

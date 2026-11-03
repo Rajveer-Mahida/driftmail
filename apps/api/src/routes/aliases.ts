@@ -18,11 +18,17 @@ aliases.post("/", async (c) => {
   const uid = scopeOf(c);
   const policies = await loadPolicies(c.env.DB);
   if (!policies.length) {
-    return c.json({ error: "No mail domain is configured yet — add one in Settings." }, 400);
+    return c.json({ error: "No mail domain is configured yet — add one on the Domains page." }, 400);
   }
 
   let address = b.address?.trim().toLowerCase();
-  if (!address) {
+  if (address) {
+    // An exact address (career@example.com), as typed. Same character set the
+    // generated form allows, so nothing reaches the router it can't parse.
+    if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(address) || /^[.+-]|[.]@/.test(address)) {
+      return c.json({ error: "That isn't a valid address — use letters, digits, . _ % + -" }, 400);
+    }
+  } else {
     const primary = await getPrimaryDomain(c.env.DB);
     const domain = b.domain?.trim().toLowerCase() || primary?.domain || policies[0].domain;
     const policy = policies.find((p) => p.domain === domain);

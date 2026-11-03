@@ -1,21 +1,24 @@
 {
-  // One-click "Deploy to Cloudflare" config.
+  // Driftmail: one Worker serves the app, receives mail for EVERY domain you
+  // add, and configures its own delivery. Add domains in the app (Domains page),
+  // not by deploying more copies.
   //
-  // The deploy flow clones this repo, provisions the D1 database and R2 bucket
-  // below under YOUR account (rewriting their names and ids), then runs the root
-  // package.json `build` and `deploy` scripts.
+  // Deploy:  pnpm install && pnpm run deploy   (or the Deploy to Cloudflare button)
+  // Then open the Worker's URL — /setup does the rest, including the database.
   //
-  // Deploying by hand? Use `pnpm run deploy` — plain `pnpm deploy` is pnpm's own
-  // built-in command and shadows the script.
+  // Nothing here is account-specific, on purpose:
+  //   - No database_id. `wrangler deploy` finds the D1 database by name in your
+  //     account and reuses it, or creates it if it doesn't exist yet. Same for
+  //     the R2 bucket. So this file never needs editing and never leaks an id.
+  //   - Fixed names. The Email Routing catch-all points at the Worker BY NAME,
+  //     so the app assumes "driftmail". If you rename the Worker, set a
+  //     WORKER_NAME var to match.
+  //   - No migrations in the deploy command. The Worker applies them itself:
+  //     automatically on an empty database, and from Settings → "Update
+  //     database" when a new version brings more.
   //
-  // Everything else is configured in the browser at /setup — there is nothing to
-  // type into the deploy form, and no `wrangler secret put` to run afterwards.
-  //
-  // The resource names below are the generic defaults. A D1 database can never
-  // be renamed once created, so if you're deploying from a clone, run
-  // `pnpm provision <your-domain>` FIRST — it creates them named after your
-  // domain and rewrites the names and ids here. Deploying from the button
-  // instead? Rename them in the deploy form; you can't change them later.
+  // `pnpm run deploy`, not `pnpm deploy` — the latter is pnpm's own built-in
+  // command and shadows the script.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "driftmail",
   "main": "apps/api/src/index.ts",
@@ -36,12 +39,14 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "driftmail-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "driftmail",
+      // Kept for local development (`pnpm db:local`) and manual recovery with
+      // `wrangler d1 migrations apply`. Production uses the in-app runner,
+      // which writes the same d1_migrations ledger.
       "migrations_dir": "apps/api/migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "EMAIL_CACHE", "bucket_name": "driftmail-email-cache" }],
+  "r2_buckets": [{ "binding": "EMAIL_CACHE", "bucket_name": "driftmail-mail" }],
 
   // Outbound, when Cloudflare is chosen as the sending provider in the wizard.
   // Unrestricted, so the choice can change without a redeploy; the app enforces
@@ -52,10 +57,9 @@
   "triggers": { "crons": ["* * * * *"] }
 
   // No "vars" block, deliberately: every var declared here becomes a field in
-  // the deploy button's form, and all configuration now lives in D1.
+  // the deploy button's form, and all configuration lives in D1.
   //
-  // No required secrets either. Two OPTIONAL ones can be added afterwards under
-  // Worker → Settings → Variables and Secrets:
+  // Optional secrets/vars, added afterwards under Worker → Settings → Variables:
   //
   //   SETUP_TOKEN     accepted by /api/setup/claim instead of a Cloudflare API
   //                   token, for operators who would rather not give this app a
@@ -63,4 +67,5 @@
   //   CONFIG_ENC_KEY  wraps stored credentials at rest. Worth setting only
   //                   because it lives OUTSIDE the database — see the trust
   //                   boundary note in apps/api/src/config/secrets.ts.
+  //   WORKER_NAME     only if you deployed under a name other than "driftmail".
 }

@@ -43,6 +43,11 @@ export type Env = {
   SETUP_TOKEN?: string;
   CONFIG_ENC_KEY?: string;
 
+  // OPTIONAL. Only needed if you deploy this Worker under a name other than
+  // "driftmail": the Email Routing catch-all points at the Worker BY NAME, and
+  // on localhost there is no hostname to detect it from.
+  WORKER_NAME?: string;
+
   // LOCAL DEVELOPMENT ONLY. Set to "1" in .dev.vars to let /api/setup/claim
   // accept a Cloudflare API token without proving that the token's account runs
   // the Worker — impossible on localhost, since no Worker serves it.

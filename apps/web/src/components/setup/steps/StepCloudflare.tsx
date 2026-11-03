@@ -435,7 +435,7 @@ export function StepCloudflare({ next, back, patch }: StepProps) {
                 <strong className="text-muted">Where the token lives.</strong> It is stored in this
                 app's database, so anyone with access to your Cloudflare account — or anyone who
                 can deploy code to this Worker — can read it. That is the same exposure as a Worker
-                secret. You can replace or revoke it any time in Settings.
+                secret. You can revoke it any time in the Cloudflare dashboard.
               </p>
             </div>
           )}

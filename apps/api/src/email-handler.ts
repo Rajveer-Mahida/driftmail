@@ -19,6 +19,7 @@ const REJECT_MESSAGE: Record<RejectCode, string> = {
   unknown_domain: "Address not allowed",
   disabled_alias: "Address not active",
   disabled_owner: "Mailbox unavailable",
+  not_allowed: "Address not allowed",
   no_owner: "Address not allowed",
 };
 

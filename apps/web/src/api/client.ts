@@ -19,6 +19,13 @@ import type {
   SessionUser,
 } from "@email/shared";
 
+export type MigrationStatus = {
+  initialized: boolean;
+  managed: boolean;
+  applied: string[];
+  pending: string[];
+};
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -164,7 +171,7 @@ export const api = {
   // domains (only once a Cloudflare token is stored; 503 otherwise)
   listDomains: () => req<DomainsResponse>("/api/domains"),
   listZones: () =>
-    req<{ zones: Array<{ id: string; name: string; added: boolean; currentMx: string[]; managedDns: boolean }> }>(
+    req<{ zones: Array<{ id: string; name: string; added: boolean; currentMx: string[]; managedDns: boolean; catchAllTarget: string | null }> }>(
       "/api/domains/zones",
     ),
   addDomain: (data: { zoneId: string; domain: string; primary?: boolean; confirmOverwriteMx?: boolean }) =>
@@ -173,6 +180,19 @@ export const api = {
     req<{ routing_state: string; catch_all_ok: boolean; records: DomainDnsRecord[] }>(
       `/api/domains/${encodeURIComponent(domain)}/status`,
     ),
+  updateDomain: (
+    domain: string,
+    data: {
+      acceptAll?: boolean;
+      allowedPattern?: string;
+      forwardTo?: string | null;
+      fallbackForwardTo?: string | null;
+    },
+  ) =>
+    req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
   makePrimaryDomain: (domain: string) =>
     req<{ ok: true }>(`/api/domains/${encodeURIComponent(domain)}/primary`, { method: "POST" }),
   disconnectDomain: (domain: string) =>
@@ -180,6 +200,13 @@ export const api = {
       `/api/domains/${encodeURIComponent(domain)}`,
       { method: "DELETE" },
     ),
+
+  // database migrations (admin)
+  migrationStatus: () => req<MigrationStatus>("/api/admin/migrations"),
+  applyMigrations: () =>
+    req<{ ok: true; applied: string[]; status: MigrationStatus }>("/api/admin/migrations", {
+      method: "POST",
+    }),
 
   // rules
   listRules: () => req<RuleRow[]>("/api/rules"),

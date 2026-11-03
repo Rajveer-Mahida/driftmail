@@ -19,6 +19,7 @@ import {
   Tag,
   Moon,
   Sun,
+  Globe,
 } from "lucide-react";
 import type { ViewName } from "@email/shared";
 import { useUI } from "@/lib/store";
@@ -148,6 +149,9 @@ export function CommandPalette() {
                 <Item onSelect={() => goPath("/aliases")} icon={<AtSign size={16} />}>Aliases</Item>
                 <Item onSelect={() => goPath("/drafts")} icon={<FileText size={16} />}>Drafts</Item>
                 <Item onSelect={() => goPath("/settings")} icon={<Settings size={16} />}>Settings</Item>
+                {settings.data?.user.role === "admin" && (
+                  <Item onSelect={() => goPath("/domains")} icon={<Globe size={16} />}>Domains</Item>
+                )}
               </Command.Group>
 
               {(counts.data?.labels.length ?? 0) > 0 && (

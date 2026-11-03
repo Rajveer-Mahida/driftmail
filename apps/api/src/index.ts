@@ -20,11 +20,25 @@ import { domains } from "./routes/domains.ts";
 import { setup } from "./routes/setup.ts";
 import { admin } from "./routes/admin.ts";
 import { sending } from "./routes/sending.ts";
+import { ensureSchema } from "./migrations/runner.ts";
 
 const app = new Hono<HonoEnv>();
 
-// Order matters: an unclaimed instance must refuse before anything tries to
-// resolve a session against a signing key that does not exist yet.
+// Order matters. A fresh deployment has an EMPTY database, so the schema is
+// created before anything reads config; then an unclaimed instance must refuse
+// before anything tries to resolve a session against a signing key that does
+// not exist yet.
+app.use("/api/*", async (c, next) => {
+  try {
+    await ensureSchema(c.env.DB);
+  } catch (err) {
+    return c.json(
+      { error: "database_init_failed", detail: (err as Error)?.message ?? String(err) },
+      503,
+    );
+  }
+  return next();
+});
 app.use("/api/*", setupGate());
 app.use("/api/*", sessionGate());
 
@@ -55,9 +69,10 @@ app.notFound((c) => c.json({ error: "not found" }, 404));
 export default {
   fetch: app.fetch,
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext) {
+    await ensureSchema(env.DB);
     await handleEmail(message, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runScheduled(env));
+    ctx.waitUntil(ensureSchema(env.DB).then(() => runScheduled(env)));
   },
 };

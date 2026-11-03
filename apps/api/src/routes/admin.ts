@@ -20,6 +20,12 @@ import { invalidateConfigCache } from "../config/index.ts";
 import { verifyPassword } from "../users.ts";
 import { explainRecipient } from "../routing.ts";
 import { requireAdmin } from "../middleware.ts";
+import {
+  applyPendingMigrations,
+  getMigrationStatus,
+  MigrationFailedError,
+  UnmanagedDatabaseError,
+} from "../migrations/runner.ts";
 
 export const admin = new Hono<HonoEnv>();
 
@@ -52,6 +58,28 @@ function tempPassword(): string {
 }
 
 // ── people ───────────────────────────────────────────────────────────────────
+
+// ── database migrations ──────────────────────────────────────────────────────
+// A deploy ships new code but never touches the database. When the new code
+// carries migrations, admins see an "Update database" card and apply them here.
+
+admin.get("/migrations", async (c) => {
+  return c.json(await getMigrationStatus(c.env.DB));
+});
+
+admin.post("/migrations", async (c) => {
+  try {
+    const result = await applyPendingMigrations(c.env.DB);
+    invalidateConfigCache();
+    return c.json({ ok: true, ...result, status: await getMigrationStatus(c.env.DB) });
+  } catch (err) {
+    if (err instanceof UnmanagedDatabaseError) return c.json({ error: err.message }, 409);
+    if (err instanceof MigrationFailedError) {
+      return c.json({ error: err.message, migration: err.migration }, 500);
+    }
+    return c.json({ error: (err as Error)?.message ?? "Migration failed" }, 500);
+  }
+});
 
 admin.get("/users", async (c) => {
   const db = c.env.DB;

@@ -21,7 +21,7 @@ export const CONFIG_REGISTRY = {
   /** Must match the deployed Worker's script name — it is the value sent to the
    *  Email Routing rule API, and a Worker cannot read its own script name. */
   "instance.worker_name": s("driftmail"),
-  "instance.worker_source": s("auto"), // auto | workers_dev | custom_domain | manual
+  "instance.worker_source": s("auto"), // auto | workers_dev | custom_domain | default | manual
   "instance.hostname": s(),
   "instance.cf_account_id": s(),
 

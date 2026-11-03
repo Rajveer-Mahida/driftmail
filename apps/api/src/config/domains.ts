@@ -124,10 +124,45 @@ export function matchDomain(policies: DomainPolicy[], address: string): DomainPo
 export function isAllowedRecipient(policies: DomainPolicy[], address: string): boolean {
   const policy = matchDomain(policies, address);
   if (!policy) return false;
+  return addressAllowedByPolicy(policy, address);
+}
 
-  const addr = address.trim().toLowerCase();
+/** Whether one domain's accept rule lets this address in. Accept-all (or a
+ *  pattern list that is somehow empty) takes everything on the domain. */
+export function addressAllowedByPolicy(policy: DomainPolicy, address: string): boolean {
   if (policy.acceptAll || !policy.allowedPattern.length) return true;
+  const addr = address.trim().toLowerCase();
   return policy.allowedPattern.some((entry) => globToRe(entry).test(addr));
+}
+
+/**
+ * Validate an "only these addresses" list for one domain: comma- or
+ * newline-separated full addresses, `*` allowed anywhere. Each entry must be
+ * for THIS domain — a pattern for another domain would silently accept nothing.
+ */
+export function validatePatterns(
+  domain: string,
+  raw: string,
+): { ok: true; patterns: string[] } | { ok: false; error: string } {
+  const d = domain.trim().toLowerCase();
+  const entries = raw
+    .split(/[,\n]/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (!entries.length) {
+    return { ok: false, error: "Add at least one address or pattern, e.g. career@" + d };
+  }
+  for (const e of entries) {
+    const at = e.lastIndexOf("@");
+    if (at < 1 || at === e.length - 1 || e.indexOf("@") !== at) {
+      return { ok: false, error: `"${e}" isn't an address pattern — use local@${d}, e.g. *.shop@${d}` };
+    }
+    if (/\s/.test(e)) return { ok: false, error: `"${e}" contains a space` };
+    if (!globToRe(e.slice(at + 1)).test(d)) {
+      return { ok: false, error: `"${e}" is for a different domain than ${d}` };
+    }
+  }
+  return { ok: true, patterns: [...new Set(entries)] };
 }
 
 // ── storage ──────────────────────────────────────────────────────────────────

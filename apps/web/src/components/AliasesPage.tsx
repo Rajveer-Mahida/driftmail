@@ -55,20 +55,33 @@ export function AliasesPage() {
   const [name, setName] = useState("");
   const [local, setLocal] = useState("");
   const [domain, setDomain] = useState("");
+  /** Exact: the address is created as typed (career@example.com), without the
+   *  ".handle" that generated aliases carry. */
+  const [exact, setExact] = useState(false);
   const dom = domain || settings.data?.primary_domain || domains[0] || "";
 
   function generate() {
+    setExact(false);
     setLocal(randomLocal());
   }
 
   async function onCreate() {
+    const typed = local.trim();
+    if (exact && !typed) {
+      toast.error("Type the address you want, e.g. career");
+      return;
+    }
     try {
-      await create.mutateAsync({ local: local || undefined, domain: dom, name: name || undefined });
-      toast.success("Alias created");
+      await create.mutateAsync(
+        exact
+          ? { address: `${typed}@${dom}`, name: name || undefined }
+          : { local: typed || undefined, domain: dom, name: name || undefined },
+      );
+      toast.success(exact ? `${typed}@${dom} created` : "Alias created");
       setName("");
       setLocal("");
-    } catch {
-      toast.error("Could not create alias");
+    } catch (err) {
+      toast.error((err as Error).message || "Could not create alias");
     }
   }
 
@@ -97,11 +110,12 @@ export function AliasesPage() {
               <input
                 value={local}
                 onChange={(e) => setLocal(e.target.value.toLowerCase())}
-                placeholder="custom"
+                placeholder={exact ? "career" : "custom"}
+                aria-label="Alias address"
                 className="min-w-0 flex-1 bg-transparent outline-none"
               />
               <span className="shrink-0 font-mono text-xs text-faint">
-                {handle ? `.${handle}@` : "@"}
+                {!exact && handle ? `.${handle}@` : "@"}
               </span>
               <select
                 value={dom}
@@ -123,7 +137,22 @@ export function AliasesPage() {
             <Button variant="primary" size="sm" onClick={onCreate} disabled={create.isPending}>
               {create.isPending ? <Spinner /> : <Plus size={15} />} Create alias
             </Button>
+            <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={exact}
+                onChange={(e) => setExact(e.target.checked)}
+                className="accent-[var(--color-accent)]"
+              />
+              Exact address
+            </label>
           </div>
+          {exact && (
+            <p className="mt-2 text-xs text-faint">
+              Created as typed — {local.trim() || "career"}@{dom}, without .{handle || "handle"}. If you
+              delete it later, mail to it stops reaching you.
+            </p>
+          )}
         </div>
 
         {/* Bulk action bar */}

@@ -327,19 +327,23 @@ setup.post("/claim", async (c) => {
     // invisible; hand it to the first administrator.
     const adopted = await adoptOrphanRows(c.env.DB, asUserId(admin.id));
 
+    // The Worker name is what the catch-all rule targets. Detected from the
+    // hostname when possible; otherwise the WORKER_NAME var, otherwise the
+    // fixed default from wrangler.jsonc ("driftmail"). There is no wizard step
+    // for it any more — a fixed name is what makes that safe.
+    const workerName = identity?.workerName || c.env.WORKER_NAME?.trim() || "";
     await setConfig(c.env.DB, {
       "instance.hostname": hostname,
-      "setup.step": identity?.workerName ? "domain" : "worker",
+      "setup.step": "domain",
+      ...(workerName ? { "instance.worker_name": workerName } : {}),
       ...(identity
         ? {
-            // Empty when running locally — leave the default in place rather
-            // than blanking the name the catch-all rule will point at.
-            ...(identity.workerName ? { "instance.worker_name": identity.workerName } : {}),
             "instance.worker_source": identity.source,
             "instance.cf_account_id": identity.accountId,
           }
         : {}),
     });
+    const storedWorker = await getConfig(c.env.DB, "instance.worker_name");
 
     const session = await issueSession(c.env, admin.id, admin.token_version);
     if (session) {
@@ -354,18 +358,16 @@ setup.post("/claim", async (c) => {
 
     return c.json({
       ok: true,
-      worker: identity?.workerName
-        ? { name: identity.workerName, source: identity.source }
-        : {
-            name: await getConfig(c.env.DB, "instance.worker_name"),
-            source: identity?.source ?? "manual",
-          },
+      worker: {
+        name: storedWorker,
+        source: identity?.source ?? "default",
+      },
       account: identity ? { id: identity.accountId, name: identity.accountName } : null,
       servingZone: identity?.zoneId
         ? { id: identity.zoneId, name: identity.zoneName }
         : null,
       adopted,
-      nextStep: identity?.workerName ? "domain" : "worker",
+      nextStep: "domain",
     });
   } catch (err) {
     const f = fail(err);
@@ -385,9 +387,9 @@ setup.get("/worker", async (c) => {
   const cfg = await loadConfig(c.env.DB);
 
   // When the token can enumerate the account's scripts, hand back the real
-  // options. This step only appears when detection failed (there is no hostname
-  // to detect from, i.e. local dev), and a free-text field here is where a typo
-  // becomes a catch-all pointed at a Worker that doesn't exist.
+  // options. Used by the Domains page's "Worker" card — the override for a
+  // Worker deployed under a name other than the detected one or the default —
+  // where a free-text typo would point a catch-all at a Worker that doesn't exist.
   let candidates: string[] = [];
   const token = await cfToken(c.env);
   const accountId = cfg["instance.cf_account_id"];

@@ -38,6 +38,7 @@ const REJECT_LABEL: Record<string, string> = {
   unknown_domain: "this instance doesn't handle that domain",
   disabled_alias: "that alias is turned off",
   disabled_owner: "that mailbox is disabled",
+  not_allowed: "the domain only accepts addresses matching its pattern",
   no_owner: "nothing claims it, and the domain has no catch-all",
 };
 

@@ -169,7 +169,7 @@ export function StepDomain({ next, back, skip, patch }: StepProps) {
             <input
               value={pattern}
               onChange={(e) => setPattern(e.target.value)}
-              placeholder="*.mail@example.com"
+              placeholder="career@example.com, *.shop@example.com"
               className={`${inputClass} font-mono text-sm`}
             />
           </Field>

@@ -34,16 +34,24 @@ function toSqlite(v: unknown): null | number | bigint | string | Uint8Array {
 }
 
 class FakePreparedStatement {
-  #stmt: StatementSync;
+  // Compiled on first use, not at prepare(): D1 is lazy too, and a batch
+  // prepares every statement before running the first — so a later statement
+  // must be able to name a table an earlier one creates.
+  #compile: () => StatementSync;
+  #compiled: StatementSync | null = null;
   #args: unknown[];
 
-  constructor(stmt: StatementSync, args: unknown[] = []) {
-    this.#stmt = stmt;
+  constructor(compile: () => StatementSync, args: unknown[] = []) {
+    this.#compile = compile;
     this.#args = args;
   }
 
+  get #stmt(): StatementSync {
+    return (this.#compiled ??= this.#compile());
+  }
+
   bind(...args: unknown[]): FakePreparedStatement {
-    return new FakePreparedStatement(this.#stmt, args);
+    return new FakePreparedStatement(this.#compile, args);
   }
 
   async first<T = Row>(column?: string): Promise<T | null> {
@@ -86,7 +94,21 @@ export class FakeD1 {
   }
 
   prepare(sql: string): FakePreparedStatement {
-    return new FakePreparedStatement(this.sqlite.prepare(sql));
+    return new FakePreparedStatement(() => this.sqlite.prepare(sql));
+  }
+
+  /** D1 runs a batch as one transaction: all statements commit, or none do. */
+  async batch(statements: FakePreparedStatement[]): Promise<unknown[]> {
+    this.sqlite.exec("BEGIN");
+    try {
+      const out = [];
+      for (const s of statements) out.push(await s.all());
+      this.sqlite.exec("COMMIT");
+      return out;
+    } catch (err) {
+      this.sqlite.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /** Apply every migration file in filename order, the same order wrangler uses. */

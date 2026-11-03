@@ -35,7 +35,6 @@ const post = (data: unknown) =>
 export type SetupStep =
   | "welcome"
   | "cloudflare"
-  | "worker"
   | "domain"
   | "routing"
   | "sending"

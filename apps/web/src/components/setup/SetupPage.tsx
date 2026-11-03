@@ -7,7 +7,6 @@ import { Spinner } from "@/components/primitives";
 import { Logomark } from "@/components/Logomark";
 import { StepWelcome } from "./steps/StepWelcome";
 import { StepCloudflare } from "./steps/StepCloudflare";
-import { StepWorker } from "./steps/StepWorker";
 import { StepDomain } from "./steps/StepDomain";
 import { StepRouting } from "./steps/StepRouting";
 import { StepSending } from "./steps/StepSending";
@@ -18,7 +17,6 @@ import { StepDone } from "./steps/StepDone";
 const STEPS: { id: SetupStep; label: string }[] = [
   { id: "welcome", label: "Start" },
   { id: "cloudflare", label: "Cloudflare" },
-  { id: "worker", label: "Worker" },
   { id: "domain", label: "Domain" },
   { id: "routing", label: "DNS" },
   { id: "sending", label: "Sending" },
@@ -72,7 +70,10 @@ export function SetupPage() {
       navigate({ to: "/" });
       return;
     }
-    setStep((current) => current ?? (status.data.claimed ? status.data.step : "welcome"));
+    // "worker" was a step in older versions; an instance paused there resumes
+    // at the domain step, which now uses the detected or default Worker name.
+    const resumed = (status.data.step as string) === "worker" ? "domain" : status.data.step;
+    setStep((current) => current ?? (status.data.claimed ? resumed : "welcome"));
     setState((s) => ({ ...s, hostname: status.data.hostname ?? s.hostname }));
   }, [status.data, navigate]);
 
@@ -155,7 +156,6 @@ export function SetupPage() {
         >
           {step === "welcome" && <StepWelcome {...props} />}
           {step === "cloudflare" && <StepCloudflare {...props} />}
-          {step === "worker" && <StepWorker {...props} />}
           {step === "domain" && <StepDomain {...props} />}
           {step === "routing" && <StepRouting {...props} />}
           {step === "sending" && <StepSending {...props} />}

@@ -27,6 +27,7 @@ const DraftsPage = named(() => import("@/components/DraftsPage"), "DraftsPage");
 const AliasesPage = named(() => import("@/components/AliasesPage"), "AliasesPage");
 const SetupPage = named(() => import("@/components/setup/SetupPage"), "SetupPage");
 const UsersPage = named(() => import("@/components/UsersPage"), "UsersPage");
+const DomainsPage = named(() => import("@/components/DomainsPage"), "DomainsPage");
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return (
@@ -155,6 +156,16 @@ const usersRoute = createRoute({
   ),
 });
 
+const domainsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/domains",
+  component: () => (
+    <Lazy>
+      <DomainsPage />
+    </Lazy>
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
   setupRoute,
   loginRoute,
@@ -164,6 +175,7 @@ const routeTree = rootRoute.addChildren([
     draftsRoute,
     aliasesRoute,
     usersRoute,
+    domainsRoute,
   ]),
 ]);
 
