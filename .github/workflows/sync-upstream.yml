@@ -1,0 +1,90 @@
+# Keep a "Deploy to Cloudflare" copy of Driftmail up to date.
+#
+# The Deploy button makes a NEW repository (not a fork), so upstream changes
+# never reach it on their own. This workflow replaces the copy's files with the
+# latest upstream code and pushes; Cloudflare's Git integration then rebuilds
+# and redeploys. Database changes are NOT applied here — admins apply them from
+# Settings → "Update database" after the deploy finishes.
+#
+# It OVERWRITES the copy: edits made directly in the copy are replaced (they
+# stay in git history). Keep custom changes upstream or in a fork instead.
+#
+# Setup, once per copy:
+#   1. Create a fine-grained GitHub token for THIS repository with
+#      Contents: Read and write, Workflows: Read and write, Actions: Read and write.
+#   2. Save it as a repository secret named DRIFTMAIL_UPDATE_TOKEN
+#      (Settings → Secrets and variables → Actions).
+#   3. Optional, for the in-app "Update Driftmail" button: add the same token to
+#      the Worker as the secret GITHUB_UPDATE_TOKEN, and set the Worker variable
+#      GITHUB_UPDATE_REPO to "owner/repo" of this copy.
+#
+# Runs weekly, from the Actions tab ("Run workflow"), or from the app.
+# Does nothing in the upstream repository itself.
+
+name: Sync from upstream Driftmail
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  # Override with a repository variable to follow a different upstream.
+  UPSTREAM: ${{ vars.DRIFTMAIL_UPSTREAM || 'Rajveer-Mahida/driftmail' }}
+  UPSTREAM_REF: ${{ vars.DRIFTMAIL_UPSTREAM_REF || 'master' }}
+
+jobs:
+  sync:
+    if: github.repository != (vars.DRIFTMAIL_UPSTREAM || 'Rajveer-Mahida/driftmail')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the token is set
+        env:
+          TOKEN: ${{ secrets.DRIFTMAIL_UPDATE_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Add a DRIFTMAIL_UPDATE_TOKEN repository secret (Contents + Workflows: read and write). See the comments at the top of this file."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # A personal token, not GITHUB_TOKEN: only it may push changes to
+          # files under .github/workflows, which upstream updates can include.
+          token: ${{ secrets.DRIFTMAIL_UPDATE_TOKEN }}
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+
+      - name: Replace the tree with upstream
+        id: sync
+        run: |
+          git fetch --depth=1 "https://github.com/${UPSTREAM}.git" "${UPSTREAM_REF}"
+          UPSTREAM_SHA=$(git rev-parse FETCH_HEAD)
+          echo "sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [ "$(git rev-parse HEAD^{tree})" = "$(git rev-parse FETCH_HEAD^{tree})" ]; then
+            echo "Already identical to ${UPSTREAM}@${UPSTREAM_SHA:0:7}."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Index and working tree become exactly upstream's: changed files are
+          # updated, removed files are deleted, nothing is merged.
+          git read-tree --reset -u FETCH_HEAD
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git config user.name "driftmail-updater"
+          git config user.email "driftmail-updater@users.noreply.github.com"
+          git commit -q -m "chore: update Driftmail to ${UPSTREAM}@${{ steps.sync.outputs.sha }}"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          echo "Pushed. Cloudflare will rebuild and deploy; then check Settings for a database update."

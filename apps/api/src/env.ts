@@ -48,6 +48,20 @@ export type Env = {
   // on localhost there is no hostname to detect it from.
   WORKER_NAME?: string;
 
+  // OPTIONAL, for copies made with the Deploy to Cloudflare button: lets admins
+  // pull upstream updates from Settings. See .github/workflows/sync-upstream.yml.
+  //   GITHUB_UPDATE_TOKEN   secret: fine-grained token for the copy
+  //                         (Contents, Actions, Workflows: read and write)
+  //   GITHUB_UPDATE_REPO    var: "owner/repo" of the copy
+  //   GITHUB_UPDATE_REF     var: branch Cloudflare deploys (default: repo default)
+  //   DRIFTMAIL_UPSTREAM    var: upstream "owner/repo" (default Rajveer-Mahida/driftmail)
+  //   DRIFTMAIL_UPSTREAM_REF var: upstream branch (default master)
+  GITHUB_UPDATE_TOKEN?: string;
+  GITHUB_UPDATE_REPO?: string;
+  GITHUB_UPDATE_REF?: string;
+  DRIFTMAIL_UPSTREAM?: string;
+  DRIFTMAIL_UPSTREAM_REF?: string;
+
   // LOCAL DEVELOPMENT ONLY. Set to "1" in .dev.vars to let /api/setup/claim
   // accept a Cloudflare API token without proving that the token's account runs
   // the Worker — impossible on localhost, since no Worker serves it.

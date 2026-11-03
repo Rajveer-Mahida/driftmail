@@ -26,6 +26,19 @@ export type MigrationStatus = {
   pending: string[];
 };
 
+export type CommitInfo = { sha: string; tree: string; message: string; date: string | null; url: string };
+export type UpdateStatus =
+  | { configured: false }
+  | {
+      configured: true;
+      repo: string;
+      upstream: string;
+      upToDate: boolean;
+      current: CommitInfo;
+      latest: CommitInfo;
+      lastRun: { status: string; conclusion: string | null; url: string; createdAt: string } | null;
+    };
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -207,6 +220,11 @@ export const api = {
     req<{ ok: true; applied: string[]; status: MigrationStatus }>("/api/admin/migrations", {
       method: "POST",
     }),
+
+  // app updates (Deploy-button copies, admin)
+  updateStatus: () => req<UpdateStatus>("/api/admin/update"),
+  startUpdate: () =>
+    req<{ ok: true; repo: string; branch: string }>("/api/admin/update", { method: "POST" }),
 
   // rules
   listRules: () => req<RuleRow[]>("/api/rules"),

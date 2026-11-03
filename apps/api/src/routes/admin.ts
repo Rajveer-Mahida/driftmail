@@ -26,6 +26,7 @@ import {
   MigrationFailedError,
   UnmanagedDatabaseError,
 } from "../migrations/runner.ts";
+import { GitHubError, getUpdateStatus, startUpdate } from "../update.ts";
 
 export const admin = new Hono<HonoEnv>();
 
@@ -78,6 +79,26 @@ admin.post("/migrations", async (c) => {
       return c.json({ error: err.message, migration: err.migration }, 500);
     }
     return c.json({ error: (err as Error)?.message ?? "Migration failed" }, 500);
+  }
+});
+
+// ── application updates (Deploy-button copies) ───────────────────────────────
+
+admin.get("/update", async (c) => {
+  try {
+    return c.json(await getUpdateStatus(c.env));
+  } catch (err) {
+    const status = err instanceof GitHubError ? 502 : 500;
+    return c.json({ error: (err as Error)?.message ?? "Update check failed" }, status);
+  }
+});
+
+admin.post("/update", async (c) => {
+  try {
+    return c.json({ ok: true, ...(await startUpdate(c.env)) });
+  } catch (err) {
+    const status = err instanceof GitHubError && err.status === 400 ? 400 : 502;
+    return c.json({ error: (err as Error)?.message ?? "Couldn't start the update" }, status);
   }
 });
 

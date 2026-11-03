@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   Bell,
   Database,
+  RefreshCw,
 } from "lucide-react";
 import {
   useSettings,
@@ -184,6 +185,9 @@ export function SettingsPage() {
               doesn't have yet. */}
           {isAdmin && <DatabaseSection />}
 
+          {/* Only for Deploy-button copies with GITHUB_UPDATE_* set. */}
+          {isAdmin && <UpdateSection />}
+
           {/* Appearance */}
           <Section icon={<Palette size={18} />} title="Appearance" desc="Switch between light and dark.">
             <button
@@ -346,6 +350,89 @@ function DatabaseSection() {
           </Button>
         </div>
       )}
+    </Section>
+  );
+}
+
+/**
+ * Pull the latest Driftmail into a Deploy-button copy. Starts the copy's
+ * sync-upstream workflow; Cloudflare redeploys when it pushes. Hidden unless
+ * GITHUB_UPDATE_TOKEN and GITHUB_UPDATE_REPO are set on the Worker.
+ */
+function UpdateSection() {
+  const status = useQuery({
+    queryKey: ["admin", "update"],
+    queryFn: api.updateStatus,
+    staleTime: 5 * 60_000,
+    retry: false,
+    // While a sync runs, follow it.
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      return d?.configured && d.lastRun && d.lastRun.status !== "completed" ? 10_000 : false;
+    },
+  });
+  const [busy, setBusy] = useState(false);
+  const qc = useQueryClient();
+
+  if (status.isPending) return null;
+  if (status.isError) {
+    return (
+      <Section
+        icon={<RefreshCw size={18} />}
+        title="Driftmail updates"
+        desc={(status.error as Error).message}
+        stack
+      >
+        <span />
+      </Section>
+    );
+  }
+  const d = status.data;
+  if (!d.configured) return null;
+
+  const running = !!d.lastRun && d.lastRun.status !== "completed";
+  const failed = !!d.lastRun && d.lastRun.status === "completed" && d.lastRun.conclusion === "failure";
+  const when = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "");
+
+  async function update() {
+    setBusy(true);
+    try {
+      await api.startUpdate();
+      toast.success("Update started", {
+        description: "GitHub copies the new version, then Cloudflare redeploys. This takes a few minutes.",
+      });
+      // The new run takes a moment to appear in GitHub's list.
+      setTimeout(() => void qc.invalidateQueries({ queryKey: ["admin", "update"] }), 4000);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section
+      icon={<RefreshCw size={18} />}
+      title={d.upToDate ? "Driftmail is up to date" : "Driftmail update available"}
+      desc={
+        d.upToDate
+          ? `${d.repo} matches ${d.upstream} (${d.latest.sha.slice(0, 7)}, ${when(d.latest.date)}).`
+          : `${d.upstream} has a newer version: "${d.latest.message}" (${when(d.latest.date)}). Updating replaces the code in ${d.repo}; your mail and settings are kept.`
+      }
+      stack
+    >
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {!d.upToDate && (
+          <Button variant="primary" size="sm" disabled={busy || running} onClick={() => void update()}>
+            {running ? "Updating…" : busy ? "Starting…" : "Update Driftmail"}
+          </Button>
+        )}
+        {d.lastRun && (
+          <a href={d.lastRun.url} target="_blank" rel="noreferrer" className="text-xs text-muted underline">
+            {running ? "Watch progress on GitHub" : failed ? "Last update failed — see why" : "Last update run"}
+          </a>
+        )}
+      </div>
     </Section>
   );
 }

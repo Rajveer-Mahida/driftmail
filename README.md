@@ -228,6 +228,31 @@ migrations apply` writes, so Wrangler still works for manual recovery:
 npx wrangler d1 migrations apply DB --remote
 ```
 
+### Updating a Deploy-button copy
+
+The Deploy to Cloudflare button copies this repository into **your** GitHub
+account and connects that copy to Cloudflare, so pushing to the copy redeploys.
+New Driftmail releases don't reach the copy on their own; the included
+`.github/workflows/sync-upstream.yml` brings them in. It replaces the copy's
+files with the latest Driftmail and pushes, then Cloudflare redeploys. It runs
+weekly, from the Actions tab, or from the app.
+
+One-time setup in the copy:
+
+1. Create a fine-grained GitHub token for the copy with **Contents**,
+   **Workflows** and **Actions**: read and write.
+2. Save it as the repository secret `DRIFTMAIL_UPDATE_TOKEN`
+   (Settings → Secrets and variables → Actions).
+3. Optional, for the **Update Driftmail** card in Settings: add the same token
+   to the Worker as the secret `GITHUB_UPDATE_TOKEN`, and the variable
+   `GITHUB_UPDATE_REPO` = `you/your-copy`.
+
+The sync **overwrites** the copy, so edits made directly in it are replaced
+(git history keeps them). Copies made before this workflow existed need the
+file added once by hand. Deploying from a clone with `pnpm run deploy` is
+unaffected: the workflow does nothing in this repository, and the card stays
+hidden without those settings.
+
 Adding a migration: put a new `apps/api/migrations/NNNN_name.sql` in place and
 run `pnpm db:bundle` (build and `dev:api` do it too). The test suite fails if
 the committed bundle is stale.
