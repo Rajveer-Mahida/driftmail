@@ -47,6 +47,8 @@ export class ApiError extends Error {
   }
 }
 
+export type MailTemplate = { id: string; name: string; subject: string; html: string; updated_at: number };
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
@@ -162,6 +164,13 @@ export const api = {
   // compose / drafts / uploads
   send: (data: ComposeRequest) =>
     req<{ ok: true; id: string; pending?: boolean }>("/api/send", body(data)),
+  composeSenders: () =>
+    req<{ default: string | null; addresses: string[]; customDomains: string[] }>("/api/compose/senders"),
+  listTemplates: () => req<MailTemplate[]>("/api/compose/templates"),
+  saveTemplate: (data: { id?: string; name: string; subject: string; html: string }) =>
+    req<MailTemplate>("/api/compose/templates", body(data)),
+  deleteTemplate: (id: string) =>
+    req<{ ok: true }>(`/api/compose/templates/${encodeURIComponent(id)}`, { method: "DELETE" }),
   listDrafts: () => req<DraftRow[]>("/api/drafts"),
   getDraft: (id: string) => req<DraftRow>(`/api/drafts/${id}`),
   saveDraft: (data: Partial<DraftRow> & { to_addr: string }) =>

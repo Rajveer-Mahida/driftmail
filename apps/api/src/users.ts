@@ -66,6 +66,16 @@ export function normalizeHandle(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+/** A valid handle from an address's local part: `rajveer.mahida` → `rajveer_mahida`. */
+export function suggestHandle(local: string): string {
+  return local
+    .toLowerCase()
+    .replace(/[.+\-\s]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+}
+
 export function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }

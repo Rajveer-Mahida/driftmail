@@ -259,6 +259,112 @@ export async function getMessage(
   return res ?? null;
 }
 
+// ── Threading ────────────────────────────────────────────────────────────────
+
+/** Every `<id@host>` token in Message-ID style headers, in order, deduplicated. */
+export function messageIdsIn(...values: (string | null | undefined)[]): string[] {
+  const out: string[] = [];
+  for (const v of values) {
+    for (const m of (v ?? "").match(/<[^<>\s]+>/g) ?? []) if (!out.includes(m)) out.push(m);
+  }
+  return out;
+}
+
+/** Reply prefixes in the languages mail clients actually send: Re, Fwd, Aw, Sv, Tr, Antw, … */
+const SUBJECT_PREFIX = /^\s*((re|fw|fwd|aw|sv|vs|tr|antw|wg|rif|res)\s*(\[\d+\])?\s*[:：]\s*)+/i;
+
+export function baseSubject(subject: string | null | undefined): string {
+  return (subject ?? "").replace(SUBJECT_PREFIX, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+const SUBJECT_MATCH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Which conversation an incoming message belongs to.
+ *
+ * 1. Any id in In-Reply-To or References that we already stored, inbound or
+ *    outbound. References carries the whole chain, so a reply to our own reply
+ *    still finds the conversation even when the provider replaced the
+ *    Message-ID we sent.
+ * 2. Failing that, a reply-prefixed subject ("Re: x") matching a recent
+ *    message exchanged with the same sender — what Gmail does too.
+ * 3. Otherwise a new conversation, keyed by the message's own Message-ID.
+ */
+export async function resolveThreadId(
+  db: DB,
+  userId: UserId,
+  m: {
+    messageId?: string | null;
+    inReplyTo?: string | null;
+    references?: string | null;
+    subject?: string | null;
+    fromAddr: string;
+    fallbackId: string;
+    now?: number;
+  },
+): Promise<string> {
+  const own = m.messageId || m.fallbackId;
+  const ids = messageIdsIn(m.inReplyTo, m.references).filter((id) => id !== m.messageId);
+
+  if (ids.length) {
+    const ph = ids.map(() => "?").join(",");
+    const { results } = await db
+      .prepare(
+        `SELECT message_id, COALESCE(thread_id, message_id, id) AS thread
+           FROM messages WHERE user_id = ? AND message_id IN (${ph})`,
+      )
+      .bind(userId, ...ids)
+      .all<{ message_id: string; thread: string }>();
+    // Prefer the closest ancestor: In-Reply-To first, then References newest-first.
+    const order = [...messageIdsIn(m.inReplyTo), ...messageIdsIn(m.references).reverse()];
+    for (const id of order) {
+      const hit = (results ?? []).find((r) => r.message_id === id);
+      if (hit) return hit.thread;
+    }
+  }
+
+  const subject = m.subject ?? "";
+  const base = baseSubject(subject);
+  if (base && SUBJECT_PREFIX.test(subject)) {
+    const sender = m.fromAddr.toLowerCase();
+    const { results } = await db
+      .prepare(
+        `SELECT subject, from_addr, to_addr, cc, COALESCE(thread_id, message_id, id) AS thread
+           FROM messages
+          WHERE user_id = ? AND received_at > ? AND LOWER(subject) LIKE ?
+          ORDER BY received_at DESC LIMIT 25`,
+      )
+      .bind(userId, (m.now ?? Date.now()) - SUBJECT_MATCH_WINDOW_MS, `%${base}`)
+      .all<{ subject: string | null; from_addr: string | null; to_addr: string | null; cc: string | null; thread: string }>();
+    const hit = (results ?? []).find(
+      (r) =>
+        baseSubject(r.subject) === base &&
+        [r.from_addr, r.to_addr, r.cc].some((f) => (f ?? "").toLowerCase().includes(sender)),
+    );
+    if (hit) return hit.thread;
+  }
+
+  return own;
+}
+
+/** A provider's id is kept only when it is a real Message-ID (`<x@host>`);
+ *  Resend returns its own API id, which no reply will ever reference. */
+export function rfcMessageId(id: string | null | undefined): string | null {
+  if (!id) return null;
+  const t = id.trim();
+  if (/^<[^<>\s]+@[^<>\s]+>$/.test(t)) return t;
+  if (/^[^<>\s]+@[^<>\s]+$/.test(t)) return `<${t}>`;
+  return null;
+}
+
+/** The References chain for a reply to `parent`: its ancestors, then itself. */
+export function referencesFor(parent: MessageRow | null | undefined): string[] {
+  if (!parent) return [];
+  // thread_id is the conversation's first Message-ID, so the chain is root,
+  // the message parent answered, then parent.
+  return messageIdsIn(parent.thread_id, parent.in_reply_to, parent.message_id);
+}
+
 export async function getThread(
   db: DB,
   userId: UserId,
@@ -542,6 +648,8 @@ export async function insertOutbound(
     html: string | null;
     text: string;
     sendAfter?: number;
+    /** The Message-ID the provider reported, when it is one. */
+    messageId?: string | null;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();
@@ -556,14 +664,15 @@ export async function insertOutbound(
   await db
     .prepare(
       `INSERT INTO messages
-         (id, user_id, in_reply_to, thread_id, direction, from_addr, from_name,
+         (id, user_id, message_id, in_reply_to, thread_id, direction, from_addr, from_name,
           to_addr, subject, snippet, html, text, raw_key, received_at, is_read,
           send_state, send_after)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
     )
     .bind(
       id,
       userId,
+      rfcMessageId(opts.messageId),
       inReplyTo,
       threadId,
       "out",
@@ -599,6 +708,8 @@ export async function recordOutbound(
     inReplyToMessageId?: string | null;
     sendAfter?: number;
     attachments?: { key: string; filename: string; mime_type: string; size_bytes: number }[];
+    /** The Message-ID the provider reported, when it is one. */
+    messageId?: string | null;
   },
 ): Promise<string> {
   const id = crypto.randomUUID();
@@ -617,14 +728,15 @@ export async function recordOutbound(
   await db
     .prepare(
       `INSERT INTO messages
-         (id, user_id, in_reply_to, thread_id, direction, from_addr, from_name,
+         (id, user_id, message_id, in_reply_to, thread_id, direction, from_addr, from_name,
           to_addr, cc, bcc, subject, snippet, html, text, raw_key, received_at,
           is_read, send_state, send_after)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
     )
     .bind(
       id,
       userId,
+      rfcMessageId(opts.messageId),
       inReplyTo,
       threadId,
       "out",
@@ -986,10 +1098,12 @@ export async function claimPendingMessage(db: DB, id: string): Promise<boolean> 
   return (res.meta?.changes ?? 0) > 0;
 }
 
-export async function markMessageSent(db: DB, id: string): Promise<void> {
+export async function markMessageSent(db: DB, id: string, messageId?: string | null): Promise<void> {
   await db
-    .prepare(`UPDATE messages SET send_state='sent', send_error=NULL WHERE id = ?`)
-    .bind(id)
+    .prepare(
+      `UPDATE messages SET send_state='sent', send_error=NULL, message_id = COALESCE(?, message_id) WHERE id = ?`,
+    )
+    .bind(rfcMessageId(messageId), id)
     .run();
 }
 

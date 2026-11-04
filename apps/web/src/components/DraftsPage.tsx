@@ -30,6 +30,7 @@ export function DraftsPage() {
       bcc: split(d.bcc),
       subject: d.subject ?? "",
       text: d.text ?? "",
+      html: d.html ?? undefined,
       inReplyToMessageId: d.in_reply_to_id ?? undefined,
       attachments,
     });

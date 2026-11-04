@@ -20,6 +20,8 @@ export function AppShell() {
   // ⌘K / Ctrl-K toggles the command palette (works even from inputs).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Already handled — e.g. Ctrl+K inserting a link in the composer.
+      if (e.defaultPrevented) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette(!useUI.getState().paletteOpen);

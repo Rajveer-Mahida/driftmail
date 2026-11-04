@@ -13,6 +13,7 @@ import {
   updateUser,
   UserError,
   validateHandle,
+  suggestHandle,
 } from "../users.ts";
 import { getDomain, listDomains, setDomainCatchall } from "../config/domains.ts";
 import { cfToken, disableCatchAll, disableRouting } from "../cloudflare.ts";
@@ -136,7 +137,7 @@ admin.post("/users", async (c) => {
 
   // Default the handle from the address, since that is almost always what the
   // admin would have typed anyway.
-  const handleInput = body.handle?.trim() || body.email.split("@")[0];
+  const handleInput = body.handle?.trim() || suggestHandle(body.email.split("@")[0]);
   const handle = validateHandle(handleInput);
   if (!handle.ok) return c.json({ error: handle.error }, 400);
 

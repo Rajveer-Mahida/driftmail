@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { HonoEnv } from "../env.ts";
 import type { ComposeRequest, UploadedAttachment } from "@email/shared";
-import { recordOutbound, getMessage, deleteDraft } from "../db.ts";
+import { recordOutbound, getMessage, deleteDraft, referencesFor } from "../db.ts";
 import { getComposeEnabled } from "../settings.ts";
 import { sendMail, resolveFrom, loadFromR2, SendError } from "../send/index.ts";
 import { scopeOf } from "../middleware.ts";
@@ -32,7 +32,7 @@ compose.post("/", async (c) => {
 
   let from: string;
   try {
-    from = await resolveFrom(c.env.DB, { explicit: body.from, parent });
+    from = await resolveFrom(c.env.DB, { explicit: body.from, parent, user: c.get("user") });
   } catch (err) {
     if (err instanceof SendError) return c.json(err.toJSON(), 400);
     throw err;
@@ -64,7 +64,7 @@ compose.post("/", async (c) => {
   }
 
   try {
-    await sendMail(c.env, {
+    const resp = await sendMail(c.env, {
       from,
       to,
       cc: cc.length ? cc : undefined,
@@ -75,13 +75,13 @@ compose.post("/", async (c) => {
       // Threading, so the reply lands in the recipient's existing conversation
       // rather than starting a new one.
       inReplyTo: parent?.message_id ?? undefined,
-      references: parent?.message_id ? [parent.message_id] : undefined,
+      references: referencesFor(parent).length ? referencesFor(parent) : undefined,
       attachments: attachments.length
         ? await loadFromR2(c.env.EMAIL_CACHE, refs(attachments))
         : undefined,
     });
 
-    const id = await recordOutbound(c.env.DB, scopeOf(c), stored);
+    const id = await recordOutbound(c.env.DB, scopeOf(c), { ...stored, messageId: resp.messageId });
     if (body.draftId) await deleteDraft(c.env.DB, scopeOf(c), body.draftId);
     return c.json({ ok: true, id });
   } catch (err) {

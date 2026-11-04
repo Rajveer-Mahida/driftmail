@@ -1,11 +1,23 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Send, X, Clock } from "lucide-react";
+import { Send, X, Clock, Maximize2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useReply, useCancelSend, useSettings } from "@/api/hooks";
-import { Button, Spinner } from "@/components/primitives";
+import { Button, Spinner, Tip } from "@/components/primitives";
+import { useUI } from "@/lib/store";
 import { api, ApiError } from "@/api/client";
+import { RichTextEditor } from "@/components/RichTextEditor";
+import { TemplateMenu } from "@/components/ComposerMenus";
+import {
+  cleanHtml,
+  htmlToText,
+  insertTemplate,
+  isBlankHtml,
+  joinWithQuote,
+  signatureHtml,
+  withoutSignature,
+} from "@/lib/compose-html";
 
 const UNDO_WINDOW = 8000;
 
@@ -13,39 +25,64 @@ export function ReplyComposer({
   messageId,
   to,
   subject,
+  quotedHtml = "",
   onClose,
 }: {
   messageId: string;
   to: string;
   subject: string;
+  /** The message being answered: folded below the editor, sent under the reply. */
+  quotedHtml?: string;
   onClose: () => void;
 }) {
-  const [text, setText] = useState("");
+  const [html, setHtml] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [scheduleAt, setScheduleAt] = useState("");
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const sigApplied = useRef(false);
   const reply = useReply();
   const cancelSend = useCancelSend();
   const settings = useSettings();
   const qc = useQueryClient();
+  const openCompose = useUI((s) => s.openCompose);
+
+  /** Move this reply into the full-screen composer, keeping what's written. */
+  function popOut() {
+    openCompose({
+      to: [to],
+      subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`,
+      html,
+      quotedHtml,
+      inReplyToMessageId: messageId,
+      expanded: true,
+    });
+    onClose();
+  }
   const disabled = settings.data && !settings.data.reply_enabled;
 
   useEffect(() => {
-    ref.current?.focus();
-  }, []);
+    const sig = settings.data?.signature;
+    if (sigApplied.current || !sig) return;
+    sigApplied.current = true;
+    setHtml((h) => `${h || "<div><br></div>"}${signatureHtml(sig)}`);
+  }, [settings.data]);
+
+  // Ignoring the signature: a reply that is only a signature is still empty.
+  const blank = isBlankHtml(withoutSignature(html));
 
   async function send() {
-    if (!text.trim() || busy) return;
+    if (blank || busy) return;
     setBusy(true);
     const replySubject = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
     const isScheduled = showSchedule && scheduleAt;
+    const body = cleanHtml(joinWithQuote(html, quotedHtml));
     try {
       const res = await reply.mutateAsync({
         messageId,
         to,
         subject: replySubject,
-        text,
+        html: body,
+        text: htmlToText(body),
         sendAfter: isScheduled ? new Date(scheduleAt).getTime() : Date.now() + UNDO_WINDOW,
       });
       onClose();
@@ -101,21 +138,35 @@ export function ReplyComposer({
             <span>
               Reply to <span className="font-mono text-fg">{to}</span>
             </span>
-            <button onClick={onClose} className="text-faint hover:text-fg" aria-label="Close">
-              <X size={15} />
-            </button>
+            <div className="flex items-center gap-2">
+              <Tip label="Open in full screen">
+                <button onClick={popOut} className="text-faint hover:text-fg" aria-label="Open in full screen">
+                  <Maximize2 size={14} />
+                </button>
+              </Tip>
+              <button onClick={onClose} className="text-faint hover:text-fg" aria-label="Close">
+                <X size={15} />
+              </button>
+            </div>
           </div>
-          <textarea
-            ref={ref}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") send();
-            }}
-            placeholder={disabled ? "Replies are disabled in Settings" : "Write your reply…"}
+          <RichTextEditor
+            value={html}
+            onChange={setHtml}
+            quotedHtml={quotedHtml}
+            autoFocus
+            onSubmit={send}
             disabled={!!disabled}
-            rows={4}
-            className="w-full resize-none bg-transparent px-4 py-3 text-[14px] leading-relaxed outline-none placeholder:text-faint disabled:opacity-60"
+            minHeight="6rem"
+            className="max-h-[50vh]"
+            placeholder={disabled ? "Replies are disabled in Settings" : "Write your reply…"}
+            toolbarEnd={
+              <TemplateMenu
+                current={() => ({ subject: "", html: cleanHtml(html) })}
+                onInsert={(t) =>
+                  setHtml((h) => insertTemplate(h, t.html))
+                }
+              />
+            }
           />
           {showSchedule && (
             <div className="flex items-center gap-2 border-t border-border px-4 py-2 text-sm">
@@ -151,7 +202,7 @@ export function ReplyComposer({
               >
                 <Clock size={16} />
               </button>
-              <Button variant="primary" size="sm" onClick={send} disabled={!text.trim() || busy || !!disabled}>
+              <Button variant="primary" size="sm" onClick={send} disabled={blank || busy || !!disabled}>
                 {busy ? <Spinner /> : <Send size={15} />}
                 {showSchedule && scheduleAt ? "Schedule" : "Send"}
               </Button>

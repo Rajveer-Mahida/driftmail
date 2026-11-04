@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/primitives";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { router, queryClient } from "@/router";
 import { useUI } from "@/lib/store";
+import { watchForNewMail } from "@/api/hooks";
 import "@/index.css";
 
 function ThemedToaster() {
@@ -27,6 +28,8 @@ function ThemedToaster() {
     />
   );
 }
+
+watchForNewMail(queryClient);
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

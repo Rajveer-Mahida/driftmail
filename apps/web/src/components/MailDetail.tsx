@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
@@ -49,6 +49,8 @@ import { ReplyComposer } from "@/components/ReplyComposer";
 import { AttachmentLightbox, isPreviewable } from "@/components/AttachmentLightbox";
 import { useShortcuts } from "@/lib/useShortcuts";
 import { renderEmailHtml } from "@/lib/sanitize";
+import { splitQuotedHtml, splitQuotedText } from "@/lib/quotes";
+import { forwardHtml, quoteHtml } from "@/lib/compose-html";
 import { formatFullDate, formatBytes, displayName, cn } from "@/lib/utils";
 
 // Remember which individual messages the user chose to load images for (persists
@@ -178,12 +180,16 @@ export function MailDetail() {
   const last = thread[thread.length - 1] ?? message;
   const replyPeer = message.direction === "out" ? message.to_addr : message.from_addr;
 
-  function quotedBody(): string {
-    const body = message.text || "";
-    return `\n\nOn ${formatFullDate(message.received_at)}, ${displayName(
-      message.from_name,
-      message.from_addr,
-    )} wrote:\n> ${body.replace(/\n/g, "\n> ")}`;
+  /** The message being answered, folded under the reply. Gmail's markup, so
+   *  every client (and Driftmail) collapses it. */
+  function quotedOriginal(): string {
+    const name = displayName(message.from_name, message.from_addr);
+    return quoteHtml({
+      date: formatFullDate(message.received_at),
+      from: name && name !== message.from_addr ? `${name} <${message.from_addr}>` : message.from_addr,
+      html: message.html,
+      text: message.text,
+    });
   }
 
   function onForward() {
@@ -197,9 +203,14 @@ export function MailDetail() {
     const subj = message.subject ?? "";
     openCompose({
       subject: /^fwd:/i.test(subj) ? subj : `Fwd: ${subj}`,
-      text: `\n\n---------- Forwarded message ----------\nFrom: ${message.from_addr}\nDate: ${formatFullDate(
-        message.received_at,
-      )}\nSubject: ${subj}\n\n${message.text ?? ""}`,
+      quotedHtml: forwardHtml({
+        date: formatFullDate(message.received_at),
+        from: message.from_name ? `${message.from_name} <${message.from_addr}>` : message.from_addr,
+        to: message.to_addr,
+        subject: subj,
+        html: message.html,
+        text: message.text,
+      }),
       attachments: atts,
     });
   }
@@ -222,7 +233,7 @@ export function MailDetail() {
       to: [replyPeer],
       cc,
       subject: /^re:/i.test(subj) ? subj : `Re: ${subj}`,
-      text: quotedBody(),
+      quotedHtml: quotedOriginal(),
       inReplyToMessageId: message.id,
     });
   }
@@ -405,6 +416,7 @@ export function MailDetail() {
               messageId={message.id}
               to={replyPeer}
               subject={last.subject ?? message.subject ?? ""}
+              quotedHtml={quotedOriginal()}
               onClose={() => setReplying(false)}
             />
           ) : (
@@ -496,6 +508,12 @@ function ThreadMessage({
   const blockSetting = settings.data?.block_remote_images ?? true;
   const blocking = blockSetting && !allowed && !loadImages;
   const { html, blocked } = renderEmailHtml(m.html, m.id, { blockRemote: blocking });
+  // Quoted history folds behind "•••", as in Gmail.
+  const [showQuoted, setShowQuoted] = useState(false);
+  const body = useMemo(
+    () => (html ? splitQuotedHtml(html) : splitQuotedText(m.text ?? "")),
+    [html, m.text],
+  );
 
   // Scheduled vs in-flight send state for outbound rows.
   const scheduled = m.send_state === "pending" && !!m.send_after && m.send_after > Date.now();
@@ -651,11 +669,35 @@ function ThreadMessage({
                 {/* w-fit + min-w-full centers narrow emails and lets wide ones expand + scroll */}
                 <div className="mx-auto w-fit min-w-full px-4 py-4">
                   {html ? (
-                    <div className="email-html text-[14px]" dangerouslySetInnerHTML={{ __html: html }} />
+                    <div className="email-html text-[14px]" dangerouslySetInnerHTML={{ __html: body.main }} />
                   ) : (
                     <pre className="whitespace-pre-wrap font-sans text-[14px] leading-relaxed text-inherit">
-                      {m.text}
+                      {body.main}
                     </pre>
+                  )}
+                  {body.quoted && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowQuoted((v) => !v)}
+                        title={showQuoted ? "Hide quoted text" : "Show quoted text"}
+                        aria-expanded={showQuoted}
+                        className="mt-3 inline-flex h-5 items-center rounded-md border border-black/15 bg-black/5 px-2 text-[13px] font-semibold leading-none tracking-[0.2em] text-[#555] transition hover:bg-black/10"
+                      >
+                        •••
+                      </button>
+                      {showQuoted &&
+                        (html ? (
+                          <div
+                            className="email-html mt-3 text-[14px]"
+                            dangerouslySetInnerHTML={{ __html: body.quoted }}
+                          />
+                        ) : (
+                          <pre className="mt-3 whitespace-pre-wrap font-sans text-[14px] leading-relaxed text-[#555]">
+                            {body.quoted}
+                          </pre>
+                        ))}
+                    </>
                   )}
                 </div>
               </div>

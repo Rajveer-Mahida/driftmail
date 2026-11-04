@@ -5,7 +5,7 @@
 // attachments, rebuild the payload, send, mark sent, revert on error.
 
 import type { Env } from "../env.ts";
-import { claimPendingMessage, markMessageSent, markMessageUnsent } from "../db.ts";
+import { claimPendingMessage, markMessageSent, markMessageUnsent, messageIdsIn } from "../db.ts";
 import { sendMail } from "./index.ts";
 import { loadFromR2, splitAddrs } from "./attachments.ts";
 import { SendError, type SendResult } from "./types.ts";
@@ -21,9 +21,10 @@ type PendingRow = {
   text: string | null;
   message_id: string | null;
   in_reply_to: string | null;
+  thread_id: string | null;
 };
 
-const SELECT_COLS = `id, to_addr, cc, bcc, from_addr, subject, html, text, message_id, in_reply_to`;
+const SELECT_COLS = `id, to_addr, cc, bcc, from_addr, subject, html, text, message_id, in_reply_to, thread_id`;
 
 async function attachmentsFor(env: Env, messageId: string) {
   const { results } = await env.DB.prepare(
@@ -81,13 +82,17 @@ export async function flushPending(env: Env, id: string): Promise<SendResult> {
       html: row.html ?? undefined,
       text: row.text ?? "",
       inReplyTo: row.in_reply_to ?? undefined,
+      // Root of the conversation, then the message this answers.
+      references: messageIdsIn(row.thread_id, row.in_reply_to).length
+        ? messageIdsIn(row.thread_id, row.in_reply_to)
+        : undefined,
       // Our own row id: a retry after a timeout reuses it, so the provider can
       // recognise the duplicate rather than delivering twice.
       idempotencyKey: id,
       attachments: attachments.length ? attachments : undefined,
     });
 
-    await markMessageSent(env.DB, id);
+    await markMessageSent(env.DB, id, result.messageId);
     return result;
   } catch (err) {
     const retryable = err instanceof SendError ? err.retryable : true;

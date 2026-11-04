@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { HonoEnv } from "../env.ts";
-import { insertOutbound, getMessage } from "../db.ts";
+import { insertOutbound, getMessage, referencesFor } from "../db.ts";
 import { getReplyEnabled } from "../settings.ts";
 import { sendMail, resolveFrom, SendError } from "../send/index.ts";
 import { scopeOf } from "../middleware.ts";
@@ -35,7 +35,7 @@ reply.post("/", async (c) => {
 
   let from: string;
   try {
-    from = await resolveFrom(c.env.DB, { parent });
+    from = await resolveFrom(c.env.DB, { parent, user: c.get("user") });
   } catch (err) {
     if (err instanceof SendError) return c.json(err.toJSON(), 400);
     throw err;
@@ -68,10 +68,10 @@ reply.post("/", async (c) => {
       html: html ? String(html) : undefined,
       text: text ? String(text) : undefined,
       inReplyTo: parent?.message_id ?? undefined,
-      references: parent?.message_id ? [parent.message_id] : undefined,
+      references: referencesFor(parent).length ? referencesFor(parent) : undefined,
     });
 
-    const id = await insertOutbound(c.env.DB, scopeOf(c), stored);
+    const id = await insertOutbound(c.env.DB, scopeOf(c), { ...stored, messageId: resp.messageId });
     return c.json({ ok: true, id, messageId: resp.messageId });
   } catch (err) {
     console.error("reply send failed", err);

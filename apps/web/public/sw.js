@@ -14,14 +14,20 @@ self.addEventListener("push", (event) => {
   const title = data.title || "New mail · Driftmail";
   const body = data.body || "You have new mail.";
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
-      tag: "driftmail-new-mail",
-      renotify: true,
-      data: { url: data.url || "/" },
-    }),
+    Promise.all([
+      // Open tabs reload the list and the open conversation right away.
+      self.clients
+        .matchAll({ type: "window", includeUncontrolled: true })
+        .then((all) => all.forEach((c) => c.postMessage({ type: "driftmail:new-mail" }))),
+      self.registration.showNotification(title, {
+        body,
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        tag: "driftmail-new-mail",
+        renotify: true,
+        data: { url: data.url || "/" },
+      }),
+    ]),
   );
 });
 

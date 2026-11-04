@@ -11,7 +11,8 @@ export type UserSettingKey =
   | "signature"
   | "block_remote_images"
   | "image_allowlist"
-  | "primary_domain";
+  | "primary_domain"
+  | "templates";
 
 export async function getUserSetting(
   db: DB,

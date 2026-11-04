@@ -185,8 +185,9 @@ export function UsersPage() {
           />
           <input
             value={handle}
-            onChange={(e) => setHandle(e.target.value.toLowerCase())}
-            placeholder={email.split("@")[0] || "handle"}
+            // '.', '-' and '+' separate a handle from its tag, so they become '_'.
+            onChange={(e) => setHandle(e.target.value.toLowerCase().replace(/[.+\-\s]/g, "_"))}
+            placeholder={suggestHandleFrom(email) || "handle"}
             className={`${inputClass} w-40`}
           />
           <Button
@@ -367,4 +368,14 @@ export function UsersPage() {
       </div>
     </div>
   );
+}
+
+/** Mirrors suggestHandle on the server: `rajveer.mahida@x` → `rajveer_mahida`. */
+function suggestHandleFrom(email: string): string {
+  return (email.split("@")[0] ?? "")
+    .toLowerCase()
+    .replace(/[.+\-\s]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
 }

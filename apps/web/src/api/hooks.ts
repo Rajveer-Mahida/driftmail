@@ -23,7 +23,9 @@ export const qk = {
 
 // ── reads ────────────────────────────────────────────────────────────────────
 export function useCounts() {
-  return useQuery({ queryKey: qk.counts, queryFn: api.counts, refetchInterval: 30_000 });
+  // The heartbeat for new mail: when these change, main.tsx reloads the list and
+  // the open conversation (see watchForNewMail).
+  return useQuery({ queryKey: qk.counts, queryFn: api.counts, refetchInterval: 15_000 });
 }
 
 export function useLabels() {
@@ -118,6 +120,9 @@ export function useMessage(id: string | undefined) {
     queryKey: qk.message(id ?? ""),
     queryFn: () => api.message(id as string),
     enabled: !!id,
+    // A reply can arrive while the conversation is open. Polling pauses while
+    // the tab is hidden and refetches on focus.
+    refetchInterval: 15_000,
   });
 }
 
@@ -360,4 +365,44 @@ export function useDisconnectDomain() {
     mutationFn: (domain: string) => api.disconnectDomain(domain),
     onSettled: () => qc.invalidateQueries({ queryKey: ["domains"] }),
   });
+}
+
+// ── live updates ─────────────────────────────────────────────────────────────
+
+/** Reload the list and the open conversation. */
+export function refreshMail(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["messages"] });
+  qc.invalidateQueries({ queryKey: ["message"] });
+  qc.invalidateQueries({ queryKey: qk.counts });
+}
+
+/**
+ * New mail shows up as a change in the counts, which poll every 15 s, or as a
+ * push message from the service worker. Either way the open conversation is
+ * reloaded too; otherwise a reply that arrives while it is open stays hidden
+ * until the user clicks away and back. Returns an unsubscribe function.
+ */
+export function watchForNewMail(qc: QueryClient): () => void {
+  let last: string | undefined;
+  const unsubCache = qc.getQueryCache().subscribe((ev) => {
+    if (ev.type !== "updated" || ev.action.type !== "success" || ev.query.queryKey[0] !== "counts") return;
+    const data = ev.query.state.data as { inbox?: number; unread?: number; sent?: number } | undefined;
+    const sig = JSON.stringify([data?.inbox, data?.unread, data?.sent]);
+    if (last !== undefined && sig !== last) {
+      qc.invalidateQueries({ queryKey: ["messages"] });
+      qc.invalidateQueries({ queryKey: ["message"] });
+    }
+    last = sig;
+  });
+
+  const onSwMessage = (e: MessageEvent) => {
+    if ((e.data as { type?: string } | null)?.type === "driftmail:new-mail") refreshMail(qc);
+  };
+  const sw = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
+  sw?.addEventListener("message", onSwMessage);
+
+  return () => {
+    unsubCache();
+    sw?.removeEventListener("message", onSwMessage);
+  };
 }

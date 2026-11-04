@@ -8,9 +8,15 @@ export type ComposeInit = {
   bcc?: string[];
   subject?: string;
   text?: string;
+  /** Editable body, as HTML. Takes precedence over `text`. */
+  html?: string;
+  /** The message being answered or forwarded; shown folded, sent below the body. */
+  quotedHtml?: string;
   inReplyToMessageId?: string;
   draftId?: string;
   attachments?: UploadedAttachment[];
+  /** Open full screen (e.g. popping out an inline reply). */
+  expanded?: boolean;
 };
 
 type Theme = "light" | "dark";

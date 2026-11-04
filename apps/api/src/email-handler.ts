@@ -7,7 +7,7 @@
 import PostalMime from "postal-mime";
 import { asUserId } from "@email/shared";
 import type { Env } from "./env.ts";
-import { registerAlias, applyRules } from "./db.ts";
+import { registerAlias, applyRules, resolveThreadId } from "./db.ts";
 import { loadPolicies, recordUnrouted } from "./config/domains.ts";
 import { resolveRecipient, type RejectCode } from "./routing.ts";
 import { notifyNewMail } from "./push.ts";
@@ -76,8 +76,16 @@ export async function handleEmail(
 
   const text = parsed.text ?? "";
   const snippet = text.replace(/\s+/g, " ").trim().slice(0, 200);
-  const threadId = parsed.inReplyTo || parsed.messageId || id;
   const fromAddr = parsed.from?.address ?? message.from;
+  const threadId = await resolveThreadId(env.DB, owner, {
+    messageId: parsed.messageId,
+    inReplyTo: parsed.inReplyTo,
+    references: parsed.references,
+    subject: parsed.subject,
+    fromAddr,
+    fallbackId: id,
+    now: ts,
+  });
   const fromName = parsed.from?.name ?? null;
 
   await env.DB.prepare(
